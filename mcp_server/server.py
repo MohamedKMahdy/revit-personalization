@@ -195,30 +195,34 @@ def _motif_to_tool_sequence(motif: Motif) -> list[dict]:
     """Convert a Motif into a list of Revit Public MCP Server tool calls."""
     sequence = []
     for step in motif.steps:
-        if step.action == "Place":
+        if step.action_type == "Place":
             sequence.append({
                 "tool": "place_element",
                 "arguments": {
-                    "family_type": step.familyType,
+                    "family_type": step.family_name,
                     "location": "{{location}}",  # filled at runtime
                 },
             })
-        elif step.action == "SetParam":
-            value = step.paramValue if step.paramValueType == "constant" else f"{{{{{step.paramName}}}}}"
+        elif step.action_type == "SetParam":
+            value = (
+                step.param_value
+                if step.param_value_type == "constant"
+                else f"{{{{{step.param_name}}}}}"
+            )
             sequence.append({
                 "tool": "set_parameter",
                 "arguments": {
                     "element_id": "{{last_element_id}}",
-                    "parameter_name": step.paramName,
+                    "parameter_name": step.param_name,
                     "value": value,
                 },
             })
-        elif step.action == "Tag":
+        elif step.action_type == "Tag":
             sequence.append({
                 "tool": "create_annotation_tag",
                 "arguments": {
                     "element_id": "{{last_element_id}}",
-                    "tag_family": step.tagFamily,
+                    "tag_family": step.tag_family_name,
                 },
             })
     return sequence
