@@ -1,0 +1,39 @@
+{
+  "id": "window_fixed_classified",
+  "label": "Place(M_Fixed) → SetParam×3 → Tag",
+  "action_signature": "P,S,S,S,T",
+  "count": 3,
+  "confidence": 0.88,
+  "examples": [
+    {
+      "example_id": "ex_w001", "session_id": "session_20260503", "recorded_at": 1746273600.0,
+      "actions": [
+        {"action_type":"Place",    "timestamp_unix":1746273600.0,"element_id":3001,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 1","transaction_name":"Place Window","transaction_id":"txw001a","operation_class":"Model"},
+        {"action_type":"SetParam", "timestamp_unix":1746273602.0,"element_id":3001,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 1","param_name":"Mark","param_group":"Identity Data","param_storage_type":"String","param_value_before":null,"param_value_after":"W-101","transaction_name":"Modify Parameter","transaction_id":"txw001b","operation_class":"Parameter"},
+        {"action_type":"SetParam", "timestamp_unix":1746273604.0,"element_id":3001,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 1","param_name":"OmniClass Number","param_group":"Identity Data","param_storage_type":"String","param_value_before":null,"param_value_after":"23.30.30.11","transaction_name":"Modify Parameter","transaction_id":"txw001c","operation_class":"Parameter"},
+        {"action_type":"SetParam", "timestamp_unix":1746273606.0,"element_id":3001,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 1","param_name":"Sill Height","param_group":"Dimensions","param_storage_type":"Double","param_value_before":null,"param_value_after":900,"transaction_name":"Modify Parameter","transaction_id":"txw001d","operation_class":"Parameter"},
+        {"action_type":"Tag",      "timestamp_unix":1746273610.0,"element_id":4001,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Window Tags","family_name":"Window Tag","type_name":"Window Tag","level_name":"Level 1","tag_family_name":"Window Tag","tagged_element_id":3001,"transaction_name":"Tag Element","transaction_id":"txw001e","operation_class":"Annotation"}
+      ]
+    },
+    {
+      "example_id": "ex_w002", "session_id": "session_20260503", "recorded_at": 1746274200.0,
+      "actions": [
+        {"action_type":"Place",    "timestamp_unix":1746274200.0,"element_id":3012,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 1","transaction_name":"Place Window","transaction_id":"txw002a","operation_class":"Model"},
+        {"action_type":"SetParam", "timestamp_unix":1746274202.0,"element_id":3012,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 1","param_name":"Mark","param_group":"Identity Data","param_storage_type":"String","param_value_before":null,"param_value_after":"W-102","transaction_name":"Modify Parameter","transaction_id":"txw002b","operation_class":"Parameter"},
+        {"action_type":"SetParam", "timestamp_unix":1746274204.0,"element_id":3012,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 1","param_name":"OmniClass Number","param_group":"Identity Data","param_storage_type":"String","param_value_before":null,"param_value_after":"23.30.30.11","transaction_name":"Modify Parameter","transaction_id":"txw002c","operation_class":"Parameter"},
+        {"action_type":"SetParam", "timestamp_unix":1746274207.0,"element_id":3012,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 1","param_name":"Sill Height","param_group":"Dimensions","param_storage_type":"Double","param_value_before":null,"param_value_after":900,"transaction_name":"Modify Parameter","transaction_id":"txw002d","operation_class":"Parameter"},
+        {"action_type":"Tag",      "timestamp_unix":1746274211.0,"element_id":4012,"view_id":401,"view_name":"Floor Plan: Level 1","view_type":"FloorPlan","element_category":"Window Tags","family_name":"Window Tag","type_name":"Window Tag","level_name":"Level 1","tag_family_name":"Window Tag","tagged_element_id":3012,"transaction_name":"Tag Element","transaction_id":"txw002e","operation_class":"Annotation"}
+      ]
+    },
+    {
+      "example_id": "ex_w003", "session_id": "session_20260504", "recorded_at": 1746360000.0,
+      "actions": [
+        {"action_type":"Place",    "timestamp_unix":1746360000.0,"element_id":4021,"view_id":402,"view_name":"Floor Plan: Level 2","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 2","transaction_name":"Place Window","transaction_id":"txw003a","operation_class":"Model"},
+        {"action_type":"SetParam", "timestamp_unix":1746360003.0,"element_id":4021,"view_id":402,"view_name":"Floor Plan: Level 2","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 2","param_name":"Mark","param_group":"Identity Data","param_storage_type":"String","param_value_before":null,"param_value_after":"W-201","transaction_name":"Modify Parameter","transaction_id":"txw003b","operation_class":"Parameter"},
+        {"action_type":"SetParam", "timestamp_unix":1746360006.0,"element_id":4021,"view_id":402,"view_name":"Floor Plan: Level 2","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 2","param_name":"OmniClass Number","param_group":"Identity Data","param_storage_type":"String","param_value_before":null,"param_value_after":"23.30.30.11","transaction_name":"Modify Parameter","transaction_id":"txw003c","operation_class":"Parameter"},
+        {"action_type":"SetParam", "timestamp_unix":1746360008.0,"element_id":4021,"view_id":402,"view_name":"Floor Plan: Level 2","view_type":"FloorPlan","element_category":"Windows","family_name":"M_Fixed","type_name":"0915 x 1220mm","level_name":"Level 2","param_name":"Sill Height","param_group":"Dimensions","param_storage_type":"Double","param_value_before":null,"param_value_after":900,"transaction_name":"Modify Parameter","transaction_id":"txw003d","operation_class":"Parameter"},
+        {"action_type":"Tag",      "timestamp_unix":1746360013.0,"element_id":5021,"view_id":402,"view_name":"Floor Plan: Level 2","view_type":"FloorPlan","element_category":"Window Tags","family_name":"Window Tag","type_name":"Window Tag","level_name":"Level 2","tag_family_name":"Window Tag","tagged_element_id":4021,"transaction_name":"Tag Element","transaction_id":"txw003e","operation_class":"Annotation"}
+      ]
+    }
+  ]
+}

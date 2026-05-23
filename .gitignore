@@ -1,0 +1,30 @@
+# .NET build outputs
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+dist/
+build/
+
+# Logs written by the add-in at runtime (don't commit real user data)
+AppData/
+*.jsonl
+*/_diag.txt
+*/_error.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
