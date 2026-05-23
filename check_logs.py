@@ -2,8 +2,12 @@
 Quick diagnostic: shows what the RevitLogger add-in has written to disk.
 Run from the project root:  python check_logs.py
 """
-import json, os
+import json, os, sys
 from pathlib import Path
+
+# Force UTF-8 output so Unicode box-drawing chars print on Windows
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 LOG_DIR = Path.home() / "AppData" / "Local" / "RevitPersonalization" / "logs"
 
@@ -16,7 +20,7 @@ else:
     print(f"Session files found: {len(files)}\n")
 
     for f in files[-3:]:           # show last 3 sessions
-        lines = f.read_text(encoding="utf-8").strip().splitlines()
+        lines = f.read_text(encoding="utf-8-sig").strip().splitlines()
         records = [json.loads(l) for l in lines if l.strip()]
         actions = [r for r in records if "action_type" in r]
 
