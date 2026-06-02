@@ -1,14 +1,20 @@
-# Agent-Augmented BIM Log Mining — Thesis Implementation
+# Agent-Augmented BIM Log Mining
+### Personalized Action Generation for Revit 2027 — MSc Thesis Implementation
 
-## Architecture
+A system that watches a Revit user's repetitive modelling actions, detects recurring workflows, and uses a multi-agent LLM pipeline (Claude API) to turn them into one-click shortcuts — running entirely locally.
 
-```
-Revit 2027 (C# add-in)  →  JSON logs  →  Python MCP Server  →  Multi-Agent Orchestrator
-                                               ↕ bridges ↕
-                                        Revit Public MCP Server
-```
+---
 
-## Setup
+## Documentation
+
+| Document | Contents |
+|----------|---------|
+| [`docs/architecture.md`](docs/architecture.md) | Full system architecture — components, data flow, technology choices, deployment topology |
+| [`docs/revit-plugin.md`](docs/revit-plugin.md) | Revit add-in deep-dive — every logged field explained, event handling, ElementSnapshot mechanism, Revit 2027 API changes |
+
+---
+
+## Quick Start
 
 ### 1. Python environment
 ```powershell
@@ -20,51 +26,111 @@ pip install -r requirements.txt --user
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
-### 3. C# add-in (requires Revit 2027 + Visual Studio)
+### 3. C# add-in (requires Revit 2027)
 ```powershell
 cd RevitLogger
-dotnet build
-# Copy output + .addin file to %APPDATA%\Autodesk\Revit\Addins\2027\
+dotnet build -c Release
+.\deploy.ps1        # close Revit first
 ```
 
-## Running the pipeline
+---
 
-### Without Revit (synthetic logs)
+## Running the Pipeline
+
 ```powershell
-# Run the full agent pipeline on synthetic door routine
+# See all detected routines (real logs + synthetic test data)
+python orchestrator/agents.py --list
+
+# Run full pipeline on synthetic door routine (no Revit needed)
 python orchestrator/agents.py --routine-id door_single_flush_tagged --k 5
 
-# Auto-confirm (skip the y/N prompt)
+# Run on a routine captured from your real Revit session
+python orchestrator/agents.py --routine-id <id from --list> --k 3
+
+# Run with auto-confirm (skip the y/N prompt — useful for eval)
 python orchestrator/agents.py --routine-id door_single_flush_tagged --k 5 --auto-confirm
-```
 
-### MCP server (for MCP Inspector or Autodesk Assistant)
-```powershell
+# Execute the shortcut live in Revit (requires Revit Public MCP Server on :3000)
+python orchestrator/agents.py --routine-id <id> --execute
+
+# Start the MCP server (for MCP Inspector or Claude Desktop)
 python mcp_server/server.py
+
+# Run the evaluation harness (Pattern Agent accuracy vs. k)
+python eval/run_experiment.py --k-values 1,2,3,5 --reps 3
 ```
 
-### Evaluation (sample efficiency experiment)
-```powershell
-python eval/run_experiment.py --routine-id door_single_flush_tagged --k-values 1 3 5
-```
+---
 
-## Project structure
+## Project Structure
 
 ```
 revit-personalization/
-├── RevitLogger/        C# Revit add-in — event logging, routine detection, WPF UI
-├── mcp_server/         Python MCP server — exposes log resources + execution tools
-├── orchestrator/       Multi-agent orchestrator — Pattern Agent + Macro Agent
-├── shared/             Pydantic schemas shared between all components
-├── tests/              Synthetic log data for testing without Revit
-└── eval/               Sample efficiency evaluation harness
+├── docs/
+│   ├── architecture.md       Full system architecture
+│   └── revit-plugin.md       Revit add-in: data collected and why
+│
+├── RevitLogger/              C# Revit 2027 add-in (logging only)
+│   ├── App.cs                IExternalApplication entry point
+│   ├── ActionCapture.cs      DocumentChanged event handler
+│   ├── ElementSnapshot.cs    Before/after parameter diff cache
+│   ├── LogWriter.cs          Async JSONL writer (BlockingCollection)
+│   ├── ActionRecord.cs       Log schema DTO
+│   ├── SessionInfo.cs        Session metadata DTO
+│   └── RevitLogger.addin     Add-in manifest
+│
+├── shared/
+│   └── schemas.py            Pydantic v2 models (contract between all Python components)
+│
+├── mcp_server/
+│   ├── log_reader.py         JSONL parser + episode-grouping routine detector
+│   ├── server.py             FastMCP server (resources + tools)
+│   └── revit_bridge.py       HTTP client → Revit Public MCP Server
+│
+├── orchestrator/
+│   ├── agents.py             CLI orchestrator — coordinates both agents
+│   ├── pattern_agent.py      claude-opus-4-7 + extended thinking → Motif
+│   └── macro_agent.py        claude-sonnet-4-6 → MCP tool call sequence
+│
+├── eval/
+│   └── run_experiment.py     Pattern Agent accuracy vs. k evaluation harness
+│
+├── tests/
+│   └── synthetic_logs/       Synthetic JSONL for testing without Revit
+│       ├── door_routine_x5.json
+│       └── window_routine_x3.json
+│
+├── results/                  Created by eval harness (gitignored)
+├── .env.example              Required and optional environment variables
+├── check_logs.py             Quick diagnostic: shows what the add-in has logged
+└── deploy.ps1                Copies built DLL to Revit add-ins folder
 ```
 
-## Log format
+---
 
-Action records written by the C# add-in (and synthetic test data) use this schema:
-```json
-{ "action": "Place|SetParam|Tag", "timestamp": 1234567890.0,
-  "elementId": 1001, "viewId": 301, "familyType": "M_Single-Flush:...",
-  "paramName": "Fire Rating", "paramValue": "60", "tagFamily": "Door Tag" }
+## Log Format
+
+The C# add-in writes JSONL files to `%LOCALAPPDATA%\RevitPersonalization\logs\`.  
+Each line is one JSON object. Three record types:
+
+```jsonc
+// Line 1 — session metadata
+{"record_type":"session_start","session_id":"sess_20260523035731",
+ "revit_version":"Autodesk Revit 2027","document_hash":"69003c58b5f0", ...}
+
+// Action records (Place / SetParam / Tag)
+{"action_type":"Place","element_id":3327603,"element_category":"Doors",
+ "family_name":"Door-Passage-Single-Full_Lite","type_name":"36\" x 84\"",
+ "level_name":"L1 - Block 35","transaction_name":"Door", ...}
+
+{"action_type":"SetParam","element_id":3327603,"param_name":"Mark",
+ "param_value_before":"3C09","param_value_after":"DD1", ...}
+
+{"action_type":"Tag","element_id":3327683,
+ "tag_family_name":"Door Tag","tagged_element_id":3327603, ...}
+
+// Last line — session closed cleanly
+{"record_type":"session_end","session_id":"sess_20260523035731", ...}
 ```
+
+See [`docs/revit-plugin.md`](docs/revit-plugin.md) for a full field-by-field explanation.
