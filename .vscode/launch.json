@@ -1,0 +1,111 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+
+    // ── MCP Server ────────────────────────────────────────────────────────
+    {
+      "name": "MCP Server (SSE, port 3100)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "mcp_server.server",
+      "args": ["--transport", "sse", "--port", "3100"],
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+
+    // ── Orchestrator: list routines ───────────────────────────────────────
+    {
+      "name": "Orchestrator: list routines",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/orchestrator/agents.py",
+      "args": ["--list"],
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+
+    // ── Orchestrator: run pipeline (synthetic door routine) ───────────────
+    {
+      "name": "Orchestrator: door routine (k=5)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/orchestrator/agents.py",
+      "args": [
+        "--routine-id", "door_single_flush_tagged",
+        "--k", "5",
+        "--auto-confirm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "ANTHROPIC_API_KEY": ""
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+
+    // ── Orchestrator: run pipeline (real captured routine) ────────────────
+    {
+      "name": "Orchestrator: real routine (k=2)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/orchestrator/agents.py",
+      "args": [
+        "--routine-id", "routine_Doors_Door-Passage-Single-Full_Lite_Plac",
+        "--k", "2",
+        "--auto-confirm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "ANTHROPIC_API_KEY": ""
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+
+    // ── Smoke test ────────────────────────────────────────────────────────
+    {
+      "name": "MCP Smoke Test",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/test_mcp_server.py",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+
+    // ── Evaluation harness ────────────────────────────────────────────────
+    {
+      "name": "Eval: accuracy vs k",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/eval/run_experiment.py",
+      "args": ["--k-values", "1,2,3,5", "--reps", "1"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "ANTHROPIC_API_KEY": ""
+      },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+
+    // ── Check logs ────────────────────────────────────────────────────────
+    {
+      "name": "Check Logs",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/check_logs.py",
+      "cwd": "${workspaceFolder}",
+      "env": { "PYTHONPATH": "${workspaceFolder}" },
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+
+    // ── C# Build ─────────────────────────────────────────────────────────
+    {
+      "label": "Build RevitLogger (Release)",
+      "type": "shell",
+      "command": "dotnet",
+      "args": ["build", "-c", "Release"],
+      "options": { "cwd": "${workspaceFolder}/RevitLogger" },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "Build RevitLogger (Debug)",
+      "type": "shell",
+      "command": "dotnet",
+      "args": ["build", "-c", "Debug"],
+      "options": { "cwd": "${workspaceFolder}/RevitLogger" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "problemMatcher": "$msCompile"
+    },
+
+    // ── Deploy ────────────────────────────────────────────────────────────
+    {
+      "label": "Deploy to Revit (close Revit first!)",
+      "type": "shell",
+      "command": "powershell",
+      "args": ["-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/deploy.ps1"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" },
+      "dependsOn": "Build RevitLogger (Release)"
+    },
+
+    // ── Python ────────────────────────────────────────────────────────────
+    {
+      "label": "Start MCP Server",
+      "type": "shell",
+      "command": "python",
+      "args": ["mcp_server/server.py", "--transport", "sse", "--port", "3100"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": {
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Starting with sse transport",
+          "endsPattern": "Application startup complete"
+        }
+      }
+    },
+    {
+      "label": "Run Smoke Test",
+      "type": "shell",
+      "command": "python",
+      "args": ["test_mcp_server.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      "label": "Check Logs",
+      "type": "shell",
+      "command": "python",
+      "args": ["check_logs.py"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "List Routines",
+      "type": "shell",
+      "command": "python",
+      "args": ["orchestrator/agents.py", "--list"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}

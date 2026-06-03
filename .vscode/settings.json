@@ -1,0 +1,40 @@
+{
+  // ── Python ────────────────────────────────────────────────────────────────
+  "python.defaultInterpreterPath": "C:/Program Files/Python310/python.exe",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ],
+  "python.analysis.typeCheckingMode": "basic",
+  "[python]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "ms-python.python",
+    "editor.tabSize": 4
+  },
+
+  // ── C# ────────────────────────────────────────────────────────────────────
+  "dotnet.defaultSolution": "RevitLogger/RevitLogger.csproj",
+  "[csharp]": {
+    "editor.formatOnSave": true,
+    "editor.tabSize": 4
+  },
+
+  // ── Editor ────────────────────────────────────────────────────────────────
+  "editor.rulers": [100],
+  "editor.wordWrap": "off",
+  "editor.minimap.enabled": true,
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  // ── Explorer ──────────────────────────────────────────────────────────────
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/RevitLogger/bin": true,
+    "**/RevitLogger/obj": true,
+    "**/docs/node_modules": true
+  },
+
+  // ── Terminal ──────────────────────────────────────────────────────────────
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.cwd": "${workspaceFolder}"
+}

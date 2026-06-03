@@ -1,0 +1,19 @@
+{
+  "recommendations": [
+    // Python
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-python.debugpy",
+
+    // C# (install manually inside VS Code if corporate proxy blocks CLI install)
+    "ms-dotnettools.csdevkit",
+    "ms-dotnettools.csharp",
+
+    // Git
+    "eamodio.gitlens",
+
+    // Helpers
+    "streetsidesoftware.code-spell-checker",
+    "ms-vscode.vscode-json"
+  ]
+}
