@@ -267,4 +267,36 @@ def _apply_param_overrides(tool_sequence: list[dict], params: dict) -> list[dict
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Revit Personalization MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="sse",
+        help="MCP transport (default: sse — required for Autodesk Assistant and MCP Inspector)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=3100,
+        help="HTTP port for sse/streamable-http transport (default: 3100)",
+    )
+    args = parser.parse_args()
+
+    if args.transport == "stdio":
+        print("[RevitPersonalization MCP] Starting with stdio transport", flush=True)
+        mcp.run(transport="stdio")
+    else:
+        host = "127.0.0.1"
+        mcp.settings.port = args.port
+        mcp.settings.host = host
+        print(f"[RevitPersonalization MCP] Starting with {args.transport} transport")
+        print(f"  Listening : http://{host}:{args.port}")
+        print(f"  Resources : logs://candidate_routines")
+        print(f"              logs://routine/{{id}}/examples")
+        print(f"  Tools     : analyze_pattern, generate_command, execute_revit_command,")
+        print(f"              query_model, list_shortcuts")
+        print(f"  MCP Insp. : npx @modelcontextprotocol/inspector  -> {args.transport}://http://127.0.0.1:{args.port}/sse")
+        print(f"  Autodesk  : Add MCP Server -> http://{host}:{args.port}/sse", flush=True)
+        mcp.run(transport=args.transport)
