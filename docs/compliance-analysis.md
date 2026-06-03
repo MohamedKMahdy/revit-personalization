@@ -186,6 +186,18 @@ No screenshot or timeline visualization is captured by the add-in. The `check_lo
 
 ---
 
+## Autodesk Ecosystem Alignment
+
+The thesis §4.2 explicitly states the Python MCP server:
+> *"can, in principle, be registered as an additional MCP endpoint for Autodesk Assistant or other MCP-enabled clients."*
+
+**This is now implemented.** Our `server.py` (FastMCP, port 3100) can be registered in the Autodesk Assistant settings as a custom local MCP server. Once registered, users interact with our personalization system via natural language inside Revit's chat panel — directly addressing Research Gap 4 (proactive, real-time shortcut suggestion).
+
+**Clarification on the Autodesk Public MCP Server:**
+The thesis refers to executing shortcuts "via the official Revit Public MCP Server." This has since been confirmed read-only (Tech Preview, April 2026) — it supports model queries only, not element creation. Execution has been redirected to the C# add-in via file-based IPC (`ShortcutRunner.cs`, TODO). This is architecturally sounder (deterministic, local, no cloud dependency) and does not affect the thesis contribution.
+
+---
+
 ## Compliance Score
 
 | Requirement | Weight | Status | Score |

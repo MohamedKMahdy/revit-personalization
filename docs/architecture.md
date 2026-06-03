@@ -5,81 +5,89 @@
 
 ## 1. System Overview
 
-The system observes a Revit user's repetitive modelling actions, automatically detects recurring workflows (called *Custom Element Instantiation routines*), and uses a multi-agent LLM pipeline to convert those routines into one-click shortcuts — all running locally, without uploading any project data to the cloud.
+The system observes a Revit user's repetitive modelling actions, detects recurring workflows (called *Custom Element Instantiation routines*), and uses a multi-agent LLM pipeline to convert those routines into one-click shortcuts — all running locally, without uploading project data to the cloud.
 
-The three core concerns map directly to the three subsystems:
+### Autodesk Ecosystem Integration (Revit 2027)
 
-| Concern | Subsystem | Technology |
-|---------|-----------|-----------|
-| **Observe** — capture what the user does in real time | C# Revit Add-in | .NET 10 / Revit 2027 API |
-| **Understand** — find patterns and extract intent | Python MCP Server + Orchestrator | FastMCP, Claude API |
-| **Act** — replay learned routines on demand | Revit Public MCP Server bridge | HTTP / JSON-RPC |
+Revit 2027 ships with two AI-related components that are relevant to this thesis:
+
+| Autodesk Component | What it is | Our role |
+|-------------------|-----------|---------|
+| **Autodesk Public MCP Server** (Tech Preview) | A read-only MCP server exposed by Revit on `localhost:3000`. Supports model queries only: element counts, parameter values, view info. **Cannot create, modify, or delete elements.** | Used for model context queries (precondition checking) before suggesting shortcuts |
+| **Autodesk Assistant** (Tech Preview) | An AI chat panel embedded inside Revit's UI. Supports natural language queries and task automation (schedules, tags). Can be extended by registering additional custom MCP servers. | Our Python MCP server is registered as an additional endpoint — users can ask "What shortcuts have I learned?" in natural language directly inside Revit |
+
+**Key finding:** The Autodesk Public MCP Server is confirmed **read-only** in its current Tech Preview (April 2026). It cannot place elements, set parameters, or create annotation tags. All model modification goes through our C# add-in.
 
 ---
 
 ## 2. High-Level Architecture Diagram
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         Revit 2027 (Windows)                         │
-│                                                                      │
-│   User places doors, sets parameters, adds tags                      │
-│            │                                                         │
-│            │  DocumentChanged event (Revit API)                      │
-│            ▼                                                         │
-│  ┌─────────────────────┐                                             │
-│  │   C# Add-in         │  IExternalApplication                       │
-│  │   RevitLogger       │  ─ ActionCapture.cs  (event handler)        │
-│  │                     │  ─ ElementSnapshot.cs (before/after diffs)  │
-│  │                     │  ─ LogWriter.cs       (async JSONL writer)  │
-│  └──────────┬──────────┘                                             │
-│             │ writes JSONL                                           │
-└─────────────┼────────────────────────────────────────────────────────┘
-              │
-              ▼
-   %LOCALAPPDATA%\RevitPersonalization\logs\
-   session_YYYYMMDD_HHmmss_<docHash>.jsonl
-              │
-              │  Python reads on demand
-              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                    Python MCP Server  (local process)                │
-│                                                                      │
-│  log_reader.py     ─ parses JSONL, groups by element, detects       │
-│                      repeated episode signatures                     │
-│  server.py         ─ FastMCP: exposes resources + tools             │
-│  revit_bridge.py   ─ HTTP client → Revit Public MCP Server          │
-│                                                                      │
-│  Resources:  logs://candidate_routines                              │
-│              logs://routine/{id}/examples                           │
-│                                                                      │
-│  Tools:      analyze_pattern   generate_command                     │
-│              execute_revit_command   list_shortcuts                 │
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │ feeds CandidateRoutine + examples
-                           ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                       Orchestrator (CLI / eval)                      │
-│                                                                      │
-│  agents.py                                                          │
-│    │                                                                 │
-│    ├──▶  pattern_agent.py   claude-opus-4-7 + extended thinking     │
-│    │       Input:  k example episodes                               │
-│    │       Output: Motif JSON (invariant steps + param rules)       │
-│    │                                                                 │
-│    └──▶  macro_agent.py     claude-sonnet-4-6                       │
-│            Input:  Motif JSON                                        │
-│            Output: MCP tool call sequence (dry-run shown to user)   │
-│                                                                      │
-│  User confirms → ShortcutConfig saved to disk                       │
-└──────────────────────────┬───────────────────────────────────────────┘
-                           │  execute_revit_command (optional)
-                           ▼
-              Revit Public MCP Server  (localhost:3000)
-              place_element / set_parameter / create_annotation_tag
-                           │
-                           ▼
-                    Live Revit model updated
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          Revit 2027 (Windows process)                       │
+│                                                                             │
+│   ┌─────────────────────────────┐  ┌──────────────────────────────────────┐ │
+│   │   Autodesk Assistant        │  │   C# RevitLogger Add-in              │ │
+│   │   (chat panel, Tech Preview)│  │                                      │ │
+│   │                             │  │  App.cs           (event wiring)     │ │
+│   │  "What routines have I      │  │  ActionCapture.cs (DocumentChanged)  │ │
+│   │   learned?"                 │  │  ElementSnapshot.cs (param diffs)    │ │
+│   │       ↓ calls MCP tools     │  │  LogWriter.cs     (async JSONL)      │ │
+│   │   ← our server.py answers   │  │  RoutineDetector.cs [TODO]           │ │
+│   │                             │  │  ShortcutRunner.cs [TODO]            │ │
+│   │   "Run door shortcut"       │  │  NotificationUI.xaml [TODO]          │ │
+│   │       ↓ calls MCP tools     │  │         │              ↑             │ │
+│   │   → execute_revit_command   │  │  writes JSONL    reads IPC files     │ │
+│   └─────────────────────────────┘  └────────┬─────────────────────────────┘ │
+│                                             │                               │
+│   ┌─────────────────────────────┐           │ IPC: pending_execution.json   │
+│   │ Autodesk Public MCP Server  │           │      execution_result_*.json  │
+│   │ (read-only, localhost:3000) │           │                               │
+│   │ - get_elements_by_category  │           │                               │
+│   │ - get_active_view           │           │                               │
+│   │ - get_loaded_families       │           │                               │
+│   │ (no write operations)       │           │                               │
+│   └─────────────────────────────┘           │                               │
+└────────────────────────────────────────────┼────────────────────────────────┘
+                                             │ writes JSONL log files
+                                             ▼
+                    %LOCALAPPDATA%\RevitPersonalization\
+                    ├── logs\session_*.jsonl       ← action log
+                    ├── shortcuts\*.json           ← saved shortcuts
+                    └── ipc\                       ← Python↔C# IPC
+                                             │
+                                             │ Python reads logs + IPC
+                                             ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                      Python MCP Server  (local process)                    │
+│                      mcp_server/server.py  (FastMCP, port 3100)            │
+│                                                                            │
+│  Resources:                          Tools:                                │
+│  logs://candidate_routines           analyze_pattern                       │
+│  logs://routine/{id}/examples        generate_command                      │
+│                                      execute_revit_command → IPC → C# add-in│
+│                                      query_model → Autodesk Public MCP     │
+│                                      list_shortcuts                        │
+│                                                                            │
+│  Registered as additional MCP endpoint in Autodesk Assistant settings      │
+│  → Autodesk Assistant chat panel can call all tools above                  │
+└──────────────────────────────────────┬─────────────────────────────────────┘
+                                       │ feeds examples to orchestrator
+                                       ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│                        Orchestrator (CLI / eval)                           │
+│                        orchestrator/agents.py                              │
+│                                                                            │
+│  Pattern Agent  (claude-opus-4-7 + extended thinking)                     │
+│    Input:  k example episodes                                              │
+│    Output: Motif JSON (invariant steps + constant/variable param rules)    │
+│                                                                            │
+│  Macro Agent (claude-sonnet-4-6)                                           │
+│    Input:  Motif JSON                                                      │
+│    Output: MCP tool call sequence stored in ShortcutConfig.json            │
+│                                                                            │
+│  User confirms → ShortcutConfig saved to shortcuts/                        │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -87,180 +95,262 @@ The three core concerns map directly to the three subsystems:
 ## 3. Data Flow
 
 ### 3.1 Logging Phase (always running while Revit is open)
-
 ```
-User action in Revit
-  → Revit commits transaction
+User commits a Revit transaction
   → DocumentChanged event fires
   → ActionCapture.ProcessEvent()
-      → HandleAdded()   for Place + Tag
-      → HandleModified() for SetParam (using ElementSnapshot diff)
-  → ActionRecord enqueued in BlockingCollection
-  → LogWriter background task dequeues and writes JSONL line
+      → Place / SetParam / Tag records created
+      → ElementSnapshot provides before/after param diffs
+  → Records enqueued in BlockingCollection
+  → LogWriter background task writes JSONL line to disk
 ```
 
-Each session file looks like:
+### 3.2 Detection Phase
 ```
-Line 1:  {"record_type":"session_start", "session_id":"...", ...}
-Line 2+: {"action_type":"Place", "element_id":..., "family_name":..., ...}
-Line N:  {"record_type":"session_end", "session_id":"...", ...}
+[Option A — future: in-add-in, real-time]
+  RoutineDetector.cs (TODO)
+    → maintains rolling buffer of last 50 action records
+    → checks for repeated structural signatures every N records
+    → if ≥ 2 repetitions: signals NotificationUI.xaml
+
+[Option B — current: Python, on demand]
+  python orchestrator/agents.py --list
+    → log_reader.py groups records by element_id into episodes
+    → computes structural signatures per episode
+    → groups with ≥ 2 identical signatures → CandidateRoutine
 ```
 
-### 3.2 Detection Phase (on demand)
-
+### 3.3 Extraction Phase (orchestrator or Autodesk Assistant)
 ```
-log_reader.list_candidate_routines()
-  → reads all session_*.jsonl files
-  → for each file, groups ActionRecords by element_id
-  → forms episodes: records where element_id was first seen as a Place
-  → computes structural signature per episode:
-       "<category>|<family>|Place,SetParam(Mark),Tag"
-  → groups episodes by signature
-  → signatures with ≥ 2 occurrences → CandidateRoutine
-```
+Via CLI:
+  python orchestrator/agents.py --routine-id <id> --k 5
 
-### 3.3 Extraction Phase (orchestrator)
+Via Autodesk Assistant chat (after server registration):
+  User: "What routines have I been repeating?"
+  Assistant calls: logs://candidate_routines  → our MCP server
+  Assistant responds: "You've placed Door-Passage-Single-Full_Lite
+                       + Tag 4 times. Want to save this as a shortcut?"
+  User: "Yes, save it"
+  Assistant calls: generate_command(motif=..., name="Place Door + Tag")
 
-```
-agents.py --routine-id <id> --k 5
-  → fetch 5 examples from log_reader
-  → Pattern Agent (claude-opus-4-7, extended thinking 8000 tokens)
-       analyses all 5 examples
-       identifies invariant steps
-       classifies each SetParam as constant vs. variable
-       → returns Motif JSON
+In both cases:
+  → Pattern Agent (claude-opus-4-7 + extended thinking)
+       analyses k examples → extracts Motif
   → Macro Agent (claude-sonnet-4-6)
-       translates Motif → Revit MCP tool call sequence
-       → returns list[{"tool":..., "arguments":{...}}]
-  → user sees dry-run, confirms
-  → ShortcutConfig saved as JSON in shortcuts/
+       converts Motif → tool call sequence
+  → ShortcutConfig saved to shortcuts/{id}.json
 ```
 
-### 3.4 Execution Phase (optional)
-
+### 3.4 Execution Phase (C# add-in via IPC)
 ```
-agents.py --execute
-  → loads ShortcutConfig from disk
-  → resolves {{location}} from user click (future: C# WPF shortcut button)
-  → revit_bridge.execute_mcp_tool_sequence()
-       POST http://localhost:3000/  (Revit Public MCP Server)
-       {"jsonrpc":"2.0", "method":"tools/call",
-        "params":{"name":"place_element", "arguments":{...}}}
-  → Revit places the element, sets parameters, adds tag
+User triggers execution (CLI --execute, WPF button, or Autodesk Assistant chat)
+  → execute_revit_command(shortcut_id, params)  [MCP tool in server.py]
+  → execute_shortcut(shortcut_id, params)       [revit_bridge.py]
+      → writes ipc/pending_execution.json
+      → polls for ipc/execution_result_{id}.json
+
+C# add-in (ShortcutRunner.cs — TODO):
+  → FileSystemWatcher detects pending_execution.json
+  → reads shortcuts/{id}.json (ShortcutConfig)
+  → opens Revit transaction
+  → for each step in mcp_tool_sequence:
+      "place_element"          → FamilyInstanceCreationData + doc.Create.NewFamilyInstance()
+      "set_parameter"          → fi.get_Parameter(name).Set(value)
+      "create_annotation_tag"  → IndependentTag.Create()
+  → commits transaction
+  → writes ipc/execution_result_{id}.json
+  → Python reads result, returns to caller
+```
+
+### 3.5 Model Context Queries (Autodesk Public MCP Server, read-only)
+```
+[Before suggesting or executing a shortcut]
+  query_model("get_loaded_families", {"category": "Doors"})
+  query_model("get_active_view")
+  query_model("get_elements_by_category", {"category": "Doors", "level": "L1"})
+  → HTTP POST to localhost:3000 (Autodesk Public MCP Server)
+  → returns JSON result (read-only, no model modification)
 ```
 
 ---
 
-## 4. Component Reference
+## 4. Autodesk Ecosystem Integration Details
 
-### 4.1 C# Add-in — `RevitLogger/`
+### 4.1 Autodesk Public MCP Server — Read-Only Queries
+
+The Public MCP Server exposes six tool groups. All are read-only:
+
+| Tool group | Example tools | Our use |
+|------------|--------------|---------|
+| Model queries | `get_elements_by_category`, `get_element_parameters` | Precondition checks before shortcut execution |
+| Sheet management | `get_sheets`, `get_views` | Not used |
+| Room management | `get_rooms` | Not used |
+| Schedules | `get_schedules` | Not used |
+| Exports | `export_to_dwg` | Not used |
+| Element operations | Element queries (read-only) | Family availability checks |
+
+**Confirmed limitation (April 2026 Tech Preview):** *"The toolset is limited to read-only operations at the moment — no Revit modifications are possible."*
+
+We call this server via `revit_bridge.model_query()`. If it is unreachable (Revit not open or MCP not enabled), execution continues without context — the shortcut runs without precondition checking.
+
+### 4.2 Autodesk Assistant — Conversational Interface
+
+The Autodesk Assistant is an AI chat panel embedded in Revit 2027. It natively supports adding custom local MCP servers as additional endpoints.
+
+**How to register our Python MCP server with the Autodesk Assistant:**
+
+1. Start the Python MCP server: `python mcp_server/server.py`
+2. In Revit → Autodesk Assistant settings → Add MCP Server
+3. Configure: `{"name": "revit-personalization", "url": "http://localhost:3100/sse"}`
+
+Once registered, users can interact with our system in natural language inside Revit:
+
+| User says in Assistant chat | What happens |
+|----------------------------|-------------|
+| "What repetitive routines have I been doing?" | Assistant calls `logs://candidate_routines` → our server returns detected routines |
+| "Show me examples of my door placement routine" | Assistant calls `logs://routine/{id}/examples` |
+| "Save my door routine as a shortcut" | Assistant calls `generate_command` → shortcut saved |
+| "Run my door shortcut with Mark D-105" | Assistant calls `execute_revit_command` → C# add-in executes in Revit |
+| "How many doors are on Level 1?" | Assistant calls Autodesk's own `get_elements_by_category` tool |
+
+This makes the Autodesk Assistant the **natural language front-end** for our personalization system, directly addressing Research Gap 4 from the thesis (proactive, real-time shortcut suggestion).
+
+### 4.3 Why Not Use Autodesk Assistant for Execution Directly?
+
+The Assistant *can* perform some model modifications (creating schedules, tagging elements) via its own internal tool groups. However:
+1. It operates via natural language prompts — not programmatic, reproducible tool call sequences
+2. It has no concept of a "stored shortcut" or "learned motif"
+3. It cannot be scripted to execute a specific sequence of steps with specific parameter values
+4. It requires Autodesk's cloud services for the AI reasoning (privacy concern for some firms)
+
+Our C# add-in executes shortcuts **deterministically** from a stored `ShortcutConfig.json` — the user confirms once, and every subsequent execution is identical.
+
+---
+
+## 5. Component Reference
+
+### 5.1 C# Add-in — `RevitLogger/`
+
+| File | Status | Responsibility |
+|------|--------|---------------|
+| `App.cs` | ✅ Done | `IExternalApplication` entry point; per-document session management |
+| `ActionCapture.cs` | ✅ Done | `DocumentChanged` handler → Place / SetParam / Tag records |
+| `ElementSnapshot.cs` | ✅ Done | Before/after parameter diff cache |
+| `LogWriter.cs` | ✅ Done | Async JSONL writer (`BlockingCollection`, `System.Text.Json`) |
+| `ActionRecord.cs` | ✅ Done | Enriched log schema (Jang & Lee 2023) |
+| `SessionInfo.cs` | ✅ Done | Session metadata (SHA-1 hashed path, revit version) |
+| `RoutineDetector.cs` | 🔲 TODO | Rolling buffer + repeated-subsequence detection → triggers UI |
+| `ShortcutRunner.cs` | 🔲 TODO | FileSystemWatcher → executes shortcuts via Revit API transactions |
+| `NotificationUI.xaml` | 🔲 TODO | WPF toast: "Learn as Shortcut?" / "Run" / "Dismiss" |
+
+### 5.2 Python MCP Server — `mcp_server/`
 
 | File | Responsibility |
 |------|---------------|
-| `App.cs` | `IExternalApplication` entry point; manages per-document sessions; subscribes to `DocumentChanged`, `DocumentOpened`, `DocumentClosing` |
-| `ActionCapture.cs` | Translates `DocumentChangedEventArgs` into `ActionRecord` objects; filters to authoring categories |
-| `ElementSnapshot.cs` | In-memory parameter cache; computes before/after diffs for SetParam records |
-| `LogWriter.cs` | Thread-safe async JSONL writer using `BlockingCollection<object>` and `System.Text.Json` |
-| `ActionRecord.cs` | C# DTO: the enriched BIM log schema (snake_case, `[JsonPropertyName]` attributes) |
-| `SessionInfo.cs` | Session metadata record written as line 1 of every JSONL file |
-| `RevitLogger.addin` | Revit add-in manifest; deployed to `%APPDATA%\Autodesk\Revit\Addins\2027\` |
+| `log_reader.py` | JSONL parser; episode-grouping routine detector |
+| `server.py` | FastMCP server; 5 tools + 2 resources; registered with Autodesk Assistant |
+| `revit_bridge.py` | Two channels: `model_query()` (→ Autodesk read-only server) + `execute_shortcut()` (→ C# add-in IPC) |
 
-**Key design decisions:**
-- The add-in is **logging-only** — no pattern detection, no AI, no UI. All intelligence lives in Python.
-- `DocumentChanged` fires once per committed transaction, not per UI gesture — so one undo-step = one event, giving clean atomic grouping via `transaction_id`.
-- A `BlockingCollection` decouples Revit's UI thread from disk I/O. The write loop runs on a thread pool thread and is never blocked by the UI.
-
-### 4.2 Shared Schemas — `shared/schemas.py`
-
-Pydantic v2 models that are the **contract** between all Python components. Every field name is snake_case to match the JSON keys written by the C# add-in.
-
-| Model | Used by |
-|-------|---------|
-| `ActionRecord` | log_reader (parsing), orchestrator (input to agents) |
-| `RoutineExample` | log_reader (grouping), orchestrator (agent input) |
-| `CandidateRoutine` | MCP server resources, orchestrator input |
-| `MotifStep` / `Motif` | Pattern Agent output, Macro Agent input, server tools |
-| `ShortcutConfig` | Saved to disk; loaded for execution |
-
-### 4.3 Python MCP Server — `mcp_server/`
-
-| File | Responsibility |
-|------|---------------|
-| `log_reader.py` | Parses JSONL files; episode-grouping routine detection algorithm |
-| `server.py` | FastMCP server; 2 resources, 4 tools; `_motif_to_tool_sequence()` helper |
-| `revit_bridge.py` | HTTP client for the Revit Public MCP Server (localhost:3000) |
-
-The MCP server plays two roles:
-1. **Offline** (no Revit running): serves as a data API for the orchestrator to fetch candidate routines and examples.
-2. **Online** (Revit running with Public MCP Server): acts as a bridge to execute learned shortcuts back into the live model.
-
-### 4.4 Orchestrator — `orchestrator/`
+### 5.3 Orchestrator — `orchestrator/`
 
 | File | Model | Role |
 |------|-------|------|
-| `pattern_agent.py` | `claude-opus-4-7` + extended thinking (8 000 token budget) | Generalises k examples into a Motif — distinguishes constant from variable parameters |
-| `macro_agent.py` | `claude-sonnet-4-6` | Converts Motif into an ordered list of Revit MCP tool calls |
-| `agents.py` | — | CLI orchestrator; coordinates both agents; handles confirmation and saving |
+| `pattern_agent.py` | `claude-opus-4-7` + extended thinking | Extracts Motif from k examples |
+| `macro_agent.py` | `claude-sonnet-4-6` | Converts Motif to tool call sequence |
+| `agents.py` | — | CLI coordinator; also callable from MCP server tools |
 
-**Why two separate agents?**
-- Pattern extraction requires deep reasoning across multiple examples to correctly classify parameter variability — hence Opus + extended thinking.
-- Tool sequence generation is a structured translation task with a fixed schema — Sonnet is faster and cheaper and handles it well.
-- Separating the two makes each agent independently testable and lets us swap models without affecting the other.
+### 5.4 Evaluation — `eval/run_experiment.py`
 
-### 4.5 Evaluation Harness — `eval/run_experiment.py`
-
-Measures how the Pattern Agent's accuracy scales with k (number of examples shown). For each (routine, k, repetition) cell it:
-- Calls the Pattern Agent
-- Scores the returned Motif against the ground-truth episode structure
-- Records `step_match_accuracy`, `param_coverage`, token usage, and latency
-- Writes `results/performance_vs_k.csv` for the thesis §5 evaluation tables
+Measures Pattern Agent accuracy vs. k (number of examples). Produces `results/performance_vs_k.csv` for thesis §5 evaluation tables.
 
 ---
 
-## 5. Technology Choices
+## 6. Python ↔ C# IPC Protocol
+
+File-based inter-process communication via `%LOCALAPPDATA%\RevitPersonalization\ipc\`:
+
+**Request** (Python writes, C# reads):
+```json
+// ipc/pending_execution.json
+{
+  "shortcut_id": "a1b2c3d4",
+  "params": { "Mark": "D-105" },
+  "requested_at": 1779509164.268
+}
+```
+
+**Response** (C# writes, Python reads):
+```json
+// ipc/execution_result_a1b2c3d4.json
+{
+  "shortcut_id": "a1b2c3d4",
+  "status": "success",
+  "steps_executed": 3,
+  "element_ids_created": [3327603, 3327683],
+  "executed_at": 1779509167.5
+}
+```
+
+The C# add-in uses `FileSystemWatcher` on the `ipc/` directory. Python polls for the result file with a 250ms interval, 30s timeout.
+
+---
+
+## 7. Technology Choices
 
 | Choice | Rationale |
 |--------|-----------|
-| **C# / .NET 10** | Required by the Revit 2027 API; no other language can subscribe to `DocumentChanged` |
-| **System.Text.Json** (no NuGet) | Organisation policy blocks external NuGet sources; built-in since .NET 8 |
-| **JSONL (JSON Lines)** | Append-only, streamable, one record per line — robust to incomplete writes if Revit crashes |
-| **FastMCP (Python)** | Declarative MCP server definition; single file; compatible with MCP Inspector and Claude Desktop |
-| **Pydantic v2** | Strong runtime validation of the schema contract; `model_dump()` / `model_validate_json()` for serialisation |
-| **claude-opus-4-7 + extended thinking** | Highest reasoning depth for the parameter-classification task (constant vs. variable) — the core thesis contribution |
-| **claude-sonnet-4-6** | Structured config generation; fast; no deep reasoning required for tool-call translation |
-| **No cloud data upload** | All logs, shortcuts, and model calls use only the element IDs and parameter names — no geometry, no project contents |
+| **C# / .NET 10** | Required: only Revit API can observe `DocumentChanged` and execute transactions |
+| **File-based IPC** | No custom HTTP server needed in C#; `FileSystemWatcher` is built into .NET; survives process restarts |
+| **Autodesk Public MCP (read-only)** | Used only for model context queries — the one thing it's good at |
+| **C# add-in for execution** | Deterministic, local, no Autodesk cloud dependency, full Revit API access |
+| **FastMCP registered with Autodesk Assistant** | Gives the system a natural language interface inside Revit without building a separate chat UI |
+| **claude-opus-4-7 + extended thinking** | Highest reasoning for constant/variable parameter classification |
+| **claude-sonnet-4-6** | Structured config generation; fast and cost-effective |
+| **JSONL** | Append-only, line-by-line parseable, robust to Revit crashes |
+| **No cloud data upload** | All logs, shortcuts, and API calls use only element IDs and parameter names |
 
 ---
 
-## 6. Deployment Topology
+## 8. Deployment Topology
 
 ```
 Developer machine (Windows, Revit 2027 installed)
 │
 ├── C:\Program Files\Autodesk\Revit 2027\
-│   └── RevitAPI.dll, RevitAPIUI.dll  (Revit SDK — reference only, not shipped)
+│   └── RevitAPI.dll  (reference only)
 │
 ├── %APPDATA%\Autodesk\Revit\Addins\2027\
-│   ├── RevitLogger.addin             (add-in manifest)
-│   └── RevitLogger.dll               (built from RevitLogger/RevitLogger.csproj)
+│   ├── RevitLogger.addin
+│   └── RevitLogger.dll               (built + deployed via deploy.ps1)
 │
 ├── %LOCALAPPDATA%\RevitPersonalization\
-│   ├── logs\session_*.jsonl          (written by add-in at runtime)
-│   └── shortcuts\*.json             (written by orchestrator after confirmation)
+│   ├── logs\session_*.jsonl           (add-in writes)
+│   ├── shortcuts\*.json              (orchestrator writes, add-in reads)
+│   ├── ipc\pending_execution.json    (Python writes, C# reads)
+│   └── ipc\execution_result_*.json  (C# writes, Python reads)
 │
-└── revit-personalization\            (this repository)
-    ├── mcp_server\server.py          (run manually: python mcp_server/server.py)
-    ├── orchestrator\agents.py        (run manually: python orchestrator/agents.py ...)
-    └── eval\run_experiment.py        (run for thesis evaluation)
+├── revit-personalization\            (this repository)
+│   ├── mcp_server\server.py          python mcp_server/server.py  (port 3100)
+│   ├── orchestrator\agents.py        python orchestrator/agents.py --routine-id ...
+│   └── eval\run_experiment.py        python eval/run_experiment.py
+│
+└── Autodesk Public MCP Server        (bundled with Revit 2027, auto-starts, port 3000)
+    Read-only model queries only
 ```
 
-The Revit Public MCP Server (Autodesk, `localhost:3000`) is a separate optional component. The entire logging and agent pipeline functions without it; it is only needed for the final *execution* step (applying a shortcut back into Revit).
+**Autodesk Assistant registration** (one-time setup):
+```
+Revit 2027 → Autodesk Assistant → Settings → Add MCP Server
+  Name: revit-personalization
+  URL:  http://localhost:3100/sse
+```
 
 ---
 
-## 7. Privacy and Data Handling
+## 9. Privacy and Data Handling
 
-- **No geometry is logged.** Only element IDs, category names, family names, parameter names, and parameter values are captured.
-- **File paths are SHA-1 hashed.** The `document_hash` field in `session_start` contains the first 12 hex characters of `SHA1(doc.PathName.ToLower())`. The full path never leaves the machine.
-- **All processing is local.** The Claude API calls send only action type strings and parameter name/value pairs — no model geometry, no project file contents.
-- **Logs are session-scoped.** Each Revit session writes to its own `.jsonl` file. Closing Revit flushes and seals the file with a `session_end` record.
+- **No geometry logged.** Only element IDs, categories, family names, parameter names/values.
+- **File paths SHA-1 hashed.** The `document_hash` field is the first 12 hex chars of `SHA1(path)`.
+- **All processing is local.** Claude API calls send only action type strings and parameter name/value pairs.
+- **Autodesk Public MCP queries are local.** Port 3000 on the same machine — no data leaves the network.
+- **Autodesk Assistant AI reasoning** is the one component that uses Autodesk's cloud. It only receives the text of the user's message and our MCP server's JSON responses — no model geometry or file paths.

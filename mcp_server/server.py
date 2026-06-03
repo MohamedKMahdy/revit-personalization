@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.log_reader import list_candidate_routines, get_routine_examples
-from mcp_server.revit_bridge import execute_mcp_tool_sequence
+from mcp_server.revit_bridge import execute_shortcut, model_query
 from shared.schemas import ShortcutConfig, Motif, MotifStep
 
 SHORTCUTS_DIR = Path(os.environ.get(
@@ -145,28 +145,53 @@ def generate_command(motif: dict, name: str) -> dict:
 @mcp.tool()
 def execute_revit_command(shortcut_id: str, params: dict | None = None) -> dict:
     """
-    Execute a saved shortcut against the live Revit model via the Revit Public MCP Server.
+    Execute a saved shortcut in the live Revit model.
+
+    How it works:
+      - Writes a pending_execution.json file to the shared IPC directory.
+      - The C# RevitLogger add-in (running inside Revit) detects this file,
+        reads the ShortcutConfig, and executes Place / SetParam / Tag actions
+        directly via the Revit API inside a valid transaction.
+      - Returns the execution result written back by the add-in.
+
+    NOTE: The Autodesk Public MCP Server is read-only (Tech Preview, 2026) and
+    cannot be used for model modifications. Execution goes through the C# add-in.
 
     Args:
         shortcut_id: ID of a saved shortcut (from generate_command).
-        params: Optional dict of parameter overrides for variable fields
-                (e.g. {"Mark": "D-105"}).
+        params:      Optional runtime parameter overrides, e.g. {"Mark": "D-105"}.
 
     Returns:
-        Results of each MCP tool call in the sequence.
+        Execution result from the C# add-in, or an error if the add-in is not running.
     """
     shortcut_path = SHORTCUTS_DIR / f"{shortcut_id}.json"
     if not shortcut_path.exists():
         return {"error": f"Shortcut '{shortcut_id}' not found"}
 
-    config = ShortcutConfig.model_validate_json(shortcut_path.read_text(encoding="utf-8"))
-    tool_sequence = config.mcp_tool_sequence
+    return execute_shortcut(shortcut_id=shortcut_id, params=params)
 
-    if params:
-        tool_sequence = _apply_param_overrides(tool_sequence, params)
 
-    results = execute_mcp_tool_sequence(tool_sequence)
-    return {"shortcut_id": shortcut_id, "name": config.name, "results": results}
+@mcp.tool()
+def query_model(tool_name: str, arguments: dict | None = None) -> dict:
+    """
+    Query the live Revit model via the Autodesk Public MCP Server (read-only).
+
+    Use this to fetch model context before suggesting or executing shortcuts:
+      - tool_name="get_elements_by_category", arguments={"category":"Doors","level":"L1"}
+      - tool_name="get_active_view"
+      - tool_name="get_loaded_families", arguments={"category":"Doors"}
+
+    NOTE: The Autodesk Public MCP Server only supports read-only operations.
+    Requires Revit 2027 to be running with the MCP server enabled (localhost:3000).
+
+    Args:
+        tool_name:  Autodesk Public MCP Server tool name.
+        arguments:  Tool arguments dict (optional).
+
+    Returns:
+        Query result from the Autodesk server, or error if not reachable.
+    """
+    return model_query(tool_name, arguments or {})
 
 
 @mcp.tool()
