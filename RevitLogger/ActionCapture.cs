@@ -24,8 +24,9 @@ namespace RevitLogger;
 /// </summary>
 public class ActionCapture : IDisposable
 {
-    private readonly LogWriter       _writer;
-    private readonly ElementSnapshot _snapshot = new();
+    private readonly LogWriter        _writer;
+    private readonly RoutineDetector? _detector;   // null when real-time detection is off
+    private readonly ElementSnapshot  _snapshot = new();
     private bool _disposed;
 
     private static readonly HashSet<string> AuthoringCategories =
@@ -40,7 +41,11 @@ public class ActionCapture : IDisposable
             "Columns", "Stairs", "Railings",
         };
 
-    public ActionCapture(LogWriter writer) => _writer = writer;
+    public ActionCapture(LogWriter writer, RoutineDetector? detector = null)
+    {
+        _writer   = writer;
+        _detector = detector;
+    }
 
     public void Dispose() { _disposed = true; }
 
@@ -117,6 +122,7 @@ public class ActionCapture : IDisposable
         var r = BaseRecord("Place", OperationClass.Model, fi, ctx);
         r.HostCategory = fi.Host?.Category?.Name;
         _writer.Enqueue(r);
+        _detector?.Feed(r);   // real-time episode tracking
     }
 
     private void EmitSetParam(FamilyInstance fi, ParamChange change, RecordContext ctx)
@@ -127,6 +133,7 @@ public class ActionCapture : IDisposable
         r.ParamValueBefore = change.Before;
         r.ParamValueAfter  = change.After;
         _writer.Enqueue(r);
+        _detector?.Feed(r);   // real-time episode tracking
     }
 
     private void EmitTag(Document doc, IndependentTag tag, RecordContext ctx)
@@ -146,7 +153,7 @@ public class ActionCapture : IDisposable
         var famName  = tagType?.Family?.Name ?? tag.Category?.Name ?? "";
         var typeName = tagType?.Name ?? "";
 
-        _writer.Enqueue(new ActionRecord
+        var tagRecord = new ActionRecord
         {
             SessionId       = _writer.SessionId,
             TransactionId   = ctx.TransactionId,
@@ -165,7 +172,9 @@ public class ActionCapture : IDisposable
             ViewType        = ctx.ViewType,
             TagFamilyName   = famName,
             TaggedElementId = tagged is not null ? (int)tagged.Id.Value : null,
-        });
+        };
+        _writer.Enqueue(tagRecord);
+        _detector?.Feed(tagRecord);   // may complete an episode → fire RoutineDetected
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
