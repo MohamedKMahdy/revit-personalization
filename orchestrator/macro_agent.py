@@ -29,33 +29,36 @@ from mcp_server.revit_bridge import model_query_state, model_query
 MODEL = os.environ.get("MACRO_AGENT_MODEL", "claude-sonnet-4-6")
 
 # ── mcp-servers-for-revit tool schema shown to the agent ──────────────────────
+# These are the stable tool names used in the ShortcutConfig.mcp_tool_sequence.
+# revit_bridge._dispatch_tool() maps them to the actual backend commands.
 MCP_REVIT_TOOLS = """
-MCP-SERVERS-FOR-REVIT — AVAILABLE TOOLS
-========================================
+REVIT WRITE TOOLS  (mcp-servers-for-revit v1.0.0 + send_code_to_revit bridge)
+==============================================================================
 
 place_element(family_type: str, location: object) -> dict
-  Places a family instance in the active view at the given location.
-  family_type: full Revit family + type name, e.g. "M_Single-Flush:915x2134mm"
-  location: use the placeholder "{{location}}" (resolved to user click at runtime)
-  Returns: {"element_id": int, "family_type": str}
+  Places a door, window, or furniture instance in the active view.
+  family_type: Revit family name, e.g. "M_Single-Flush" or "M_Single-Flush:915x2134mm"
+               The bridge resolves this to the correct typeId automatically.
+  location: use the placeholder "{{location}}" — resolved to user's clicked point at runtime.
+  Returns: {"elementId": int, "family_type": str}
 
 set_parameter(element_id: int | "{{last_element_id}}", parameter_name: str, value: any) -> dict
-  Sets a parameter value on an element.
+  Sets a named parameter on an element (implemented via send_code_to_revit).
   element_id: use "{{last_element_id}}" to refer to the most recently placed element.
-  value: use the literal value for constants; use "{{ParamName}}" for variable params.
-  Returns: {"element_id": int, "parameter_name": str, "value": any}
+  value: literal for constants (e.g. "60", 915); use "{{ParamName}}" for variable params.
+  Returns: {"status": "OK", "parameter_name": str, "value": any}
 
 create_annotation_tag(element_id: int | "{{last_element_id}}", tag_family: str) -> dict
-  Places an annotation tag on an element.
+  Places an annotation tag on a specific element (implemented via send_code_to_revit).
   element_id: use "{{last_element_id}}" for the most recently placed/modified element.
-  tag_family: Revit tag family name, e.g. "M_Door Tag"
-  Returns: {"tag_id": int, "tagged_element_id": int}
+  tag_family: partial Revit tag family name, e.g. "Door Tag" or "M_Door Tag"
+  Returns: {"status": "OK", "tag_id": int, "tagged_element_id": int}
 
 PLACEHOLDER SUMMARY
 -------------------
-{{location}}          resolved to the user's clicked point when the shortcut runs
-{{last_element_id}}   resolved to the element_id of the last placed/modified element
-{{SomeParamName}}     resolved to user input at runtime (for variable parameters)
+{{location}}          user's clicked XYZ point — resolved when the shortcut runs
+{{last_element_id}}   elementId of the last placed / modified element
+{{SomeParamName}}     user-supplied value for a variable parameter
 """
 
 SYSTEM_PROMPT = f"""\
