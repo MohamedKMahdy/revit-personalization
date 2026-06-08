@@ -517,3 +517,57 @@ def _apply_param_overrides(tool_sequence: list[dict], params: dict) -> list[dict
 def execute_mcp_tool_sequence(tool_sequence: list[dict]) -> list[dict]:
     """Legacy compatibility shim — delegates to execute_tool_sequence."""
     return execute_tool_sequence(tool_sequence)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Quick connection test  (python mcp_server/revit_bridge.py)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    import sys
+
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    print("RevitWriteServer connection test")
+    print(f"Connecting to {REVIT_PLUGIN_HOST}:{REVIT_PLUGIN_PORT} …")
+    print()
+
+    # 1. say_hello ─ basic reachability
+    print("► say_hello")
+    result = say_hello()
+    if "error" in result:
+        print(f"  FAIL: {result['error']}")
+        print()
+        print("Make sure:")
+        print("  1. Revit 2027 is open")
+        print("  2. RevitWriteServer.dll loaded (check Revit journal for 'TCP server started')")
+        print("  3. Nothing else is using port 8080")
+        sys.exit(1)
+    print(f"  OK  → {result}")
+    print()
+
+    # 2. get_current_view_info ─ reads active view
+    print("► get_current_view_info")
+    result = _call_plugin("get_current_view_info", {})
+    if "error" in result:
+        print(f"  FAIL: {result['error']}")
+    else:
+        view = result.get("view", result)
+        print(f"  OK  → view='{view.get('name', '?')}' type={view.get('type', '?')}")
+    print()
+
+    # 3. get_available_family_types ─ lists loaded families
+    print("► get_available_family_types (first 3)")
+    result = _call_plugin("get_available_family_types", {})
+    if "error" in result:
+        print(f"  FAIL: {result['error']}")
+    else:
+        types = result.get("types", result) if isinstance(result, dict) else result
+        for t in (types or [])[:3]:
+            print(f"  • id={t.get('id', t.get('typeId', '?'))}  {t.get('name', '?')}")
+        total = len(types or [])
+        if total > 3:
+            print(f"  … and {total - 3} more")
+    print()
+
+    print("All checks passed. RevitWriteServer is running correctly.")
