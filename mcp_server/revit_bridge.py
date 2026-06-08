@@ -347,6 +347,32 @@ def say_hello() -> dict:
     return _call_plugin("say_hello", {})
 
 
+def notify_pattern(
+    label: str,
+    count: int,
+    motif: dict,
+    tool_sequence: list[dict],
+) -> dict:
+    """
+    Show the BIM Assistant dockable panel inside Revit with the detected pattern.
+
+    This opens the WPF chat panel, which streams a Claude greeting explaining
+    the pattern and lets the user confirm or dismiss before execution.
+
+    Args:
+        label:         Human-readable routine name, e.g. "Place Door + 4 Params + Tag"
+        count:         How many times the routine was detected
+        motif:         Structured motif dict from the Pattern Agent
+        tool_sequence: List of MCP tool-call dicts (from the Macro Agent)
+    """
+    return _call_plugin("notify_pattern", {
+        "label":         label,
+        "count":         count,
+        "motif":         motif,
+        "tool_sequence": tool_sequence,
+    })
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3.  Shortcut execution (dispatches motif tool-call sequence step by step)
 # ═══════════════════════════════════════════════════════════════════════════════

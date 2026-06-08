@@ -61,6 +61,22 @@ public abstract class CommandBase<TResult> : IRevitCommand, IExternalEventHandle
         }
     }
 
+    // ── Direct execution (for WPF button handlers already on the UI thread) ───
+    //
+    // ExternalEvent is only needed to MARSHAL onto the UI thread.
+    // When a WPF event handler fires, we ARE on the Revit/WPF UI thread, so we
+    // can call Revit API directly — no ExternalEvent required.
+
+    public object RunOnUIThread(JsonNode? parameters, Autodesk.Revit.DB.Document doc)
+    {
+        _error  = null;
+        _result = default;
+        PrepareParameters(parameters);
+        ExecuteOnRevitThread(doc);
+        if (_error is not null) throw _error;
+        return GetResult()!;
+    }
+
     // ── Called by Revit on the UI thread ─────────────────────────────────────
 
     void IExternalEventHandler.Execute(UIApplication app)
