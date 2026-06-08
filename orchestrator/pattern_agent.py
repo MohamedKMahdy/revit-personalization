@@ -120,7 +120,7 @@ def extract_motif(examples: list[dict], routine_label: str = "") -> dict:
     response = client.messages.create(
         model=MODEL,
         max_tokens=16000,
-        thinking={"type": "enabled", "budget_tokens": 8000},
+        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )

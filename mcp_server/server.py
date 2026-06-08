@@ -1,4 +1,14 @@
-"""Local Personalization MCP Server — exposes BIM log resources and tools."""
+"""
+Local Personalization MCP Server — exposes BIM log resources and tools.
+
+Architecture (updated per thesis §4.1–4.2):
+  • The C# RevitLogger add-in is OBSERVER ONLY: it captures and logs actions
+    but does NOT execute model writes.
+  • Model writes are delegated to mcp-servers-for-revit (TypeScript MCP server
+    + in-Revit plugin) via revit_bridge.execute_shortcut().
+  • model:query_state gives the Macro Agent read access to current model context
+    (selected elements, loaded families, active view) for grounding.
+"""
 from __future__ import annotations
 import json
 import os
@@ -12,7 +22,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server.log_reader import list_candidate_routines, get_routine_examples
-from mcp_server.revit_bridge import execute_shortcut, model_query
+from mcp_server.revit_bridge import (
+    execute_shortcut,
+    execute_tool_sequence,
+    model_query,
+    model_query_state,
+)
 from shared.schemas import ShortcutConfig, Motif, MotifStep
 
 SHORTCUTS_DIR = Path(os.environ.get(
@@ -145,24 +160,23 @@ def generate_command(motif: dict, name: str) -> dict:
 @mcp.tool()
 def execute_revit_command(shortcut_id: str, params: dict | None = None) -> dict:
     """
-    Execute a saved shortcut in the live Revit model.
+    Execute a saved shortcut in the live Revit model via mcp-servers-for-revit.
 
-    How it works:
-      - Writes a pending_execution.json file to the shared IPC directory.
-      - The C# RevitLogger add-in (running inside Revit) detects this file,
-        reads the ShortcutConfig, and executes Place / SetParam / Tag actions
-        directly via the Revit API inside a valid transaction.
-      - Returns the execution result written back by the add-in.
+    How it works (updated architecture §4.2):
+      - Loads the ShortcutConfig from disk by shortcut_id.
+      - Applies any runtime parameter overrides (fills {{ParamName}} placeholders).
+      - Dispatches the resolved tool-call sequence to mcp-servers-for-revit
+        (TypeScript MCP server + in-Revit plugin) step by step over JSON-RPC.
+      - The C# RevitLogger add-in is OBSERVER ONLY and is NOT involved in execution.
 
-    NOTE: The Autodesk Public MCP Server is read-only (Tech Preview, 2026) and
-    cannot be used for model modifications. Execution goes through the C# add-in.
+    Requires: Revit open with the mcp-servers-for-revit plugin active (default port 3001).
 
     Args:
         shortcut_id: ID of a saved shortcut (from generate_command).
         params:      Optional runtime parameter overrides, e.g. {"Mark": "D-105"}.
 
     Returns:
-        Execution result from the C# add-in, or an error if the add-in is not running.
+        Execution summary with per-step results from mcp-servers-for-revit.
     """
     shortcut_path = SHORTCUTS_DIR / f"{shortcut_id}.json"
     if not shortcut_path.exists():
@@ -172,24 +186,54 @@ def execute_revit_command(shortcut_id: str, params: dict | None = None) -> dict:
 
 
 @mcp.tool()
+def query_model_state(query: str) -> dict:
+    """
+    Query the current Revit model context via mcp-servers-for-revit (read-only).
+
+    This tool grounds the Macro Agent before it generates an execution plan —
+    it resolves which family types are loaded, what is currently selected,
+    what level is active, etc.
+
+    Natural-language query examples:
+      "available door types"      -> loaded Door families
+      "current selection"         -> currently selected elements and their IDs
+      "active view"               -> active view name, type, scale
+      "levels"                    -> all levels with their elevations
+      "project info"              -> project name, number, client
+
+    Requires: Revit open with the mcp-servers-for-revit plugin active.
+
+    Args:
+        query: Natural-language description of what model context is needed.
+
+    Returns:
+        Model context dict from mcp-servers-for-revit, or error if unreachable.
+    """
+    return model_query_state(query)
+
+
+@mcp.tool()
 def query_model(tool_name: str, arguments: dict | None = None) -> dict:
     """
-    Query the live Revit model via the Autodesk Public MCP Server (read-only).
+    Call a specific read tool on mcp-servers-for-revit by name.
 
-    Use this to fetch model context before suggesting or executing shortcuts:
+    Use this for precise tool calls when you already know the tool name:
       - tool_name="get_elements_by_category", arguments={"category":"Doors","level":"L1"}
       - tool_name="get_active_view"
       - tool_name="get_loaded_families", arguments={"category":"Doors"}
+      - tool_name="get_levels"
+      - tool_name="get_selected_elements"
 
-    NOTE: The Autodesk Public MCP Server only supports read-only operations.
-    Requires Revit 2027 to be running with the MCP server enabled (localhost:3000).
+    For natural-language queries, use query_model_state() instead.
+
+    Requires: Revit open with the mcp-servers-for-revit plugin active (default port 3001).
 
     Args:
-        tool_name:  Autodesk Public MCP Server tool name.
+        tool_name:  mcp-servers-for-revit tool name.
         arguments:  Tool arguments dict (optional).
 
     Returns:
-        Query result from the Autodesk server, or error if not reachable.
+        Query result from mcp-servers-for-revit, or error if not reachable.
     """
     return model_query(tool_name, arguments or {})
 
@@ -296,7 +340,8 @@ if __name__ == "__main__":
         print(f"  Resources : logs://candidate_routines")
         print(f"              logs://routine/{{id}}/examples")
         print(f"  Tools     : analyze_pattern, generate_command, execute_revit_command,")
-        print(f"              query_model, list_shortcuts")
+        print(f"              query_model, query_model_state, list_shortcuts")
+        print(f"  Backend   : mcp-servers-for-revit @ {os.environ.get('MCP_REVIT_BACKEND_URL','http://localhost:3001')}")
         print(f"  MCP Insp. : npx @modelcontextprotocol/inspector  -> {args.transport}://http://127.0.0.1:{args.port}/sse")
         print(f"  Autodesk  : Add MCP Server -> http://{host}:{args.port}/sse", flush=True)
         mcp.run(transport=args.transport)

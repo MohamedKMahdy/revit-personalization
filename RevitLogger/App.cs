@@ -9,17 +9,21 @@ namespace RevitLogger;
 /// <summary>
 /// Revit IExternalApplication entry point.
 ///
-/// Responsibilities:
+/// Responsibilities (thesis §4.1 — Observer-Only Add-in):
 ///   • Subscribes to application-level DocumentChanged / lifecycle events.
 ///   • Manages one session (LogWriter + ActionCapture + RoutineDetector) per open project.
-///   • Creates and owns the ShortcutRunner (IPC-based shortcut execution engine).
-///   • Shows NotificationUI WPF toasts when RoutineDetector confirms a pattern.
+///   • Shows NotificationUI WPF toasts when RoutineDetector confirms a repeated pattern.
 ///   • Launches the Python orchestrator when the user clicks "Learn as Shortcut".
 ///
-/// Architecture compliance:
-///   • RoutineDetector — real-time in-add-in pattern detection (thesis §4.1 ✓)
-///   • ShortcutRunner  — file IPC execution channel (replaces read-only Autodesk MCP ✓)
-///   • NotificationUI  — proactive WPF toast (thesis §4.1 notification UI ✓)
+/// THIS ADD-IN IS OBSERVER ONLY — it does NOT execute model writes.
+/// All model writes (place_element, set_parameter, create_annotation_tag) are
+/// delegated to mcp-servers-for-revit (TypeScript MCP server + in-Revit plugin)
+/// via the Python MCP server's execute_revit_command tool.
+///
+/// Architecture:
+///   RoutineDetector  — real-time CEI episode detection       (§4.1 ✓)
+///   NotificationUI   — proactive WPF toast suggestion        (§4.1 ✓)
+///   LaunchOrchestrator — spawns Python pipeline in a console (§4.2 ✓)
 /// </summary>
 [Transaction(TransactionMode.Manual)]
 [Regeneration(RegenerationOption.Manual)]
@@ -28,8 +32,6 @@ public class App : IExternalApplication
     // docKey → per-document session triple
     private readonly Dictionary<string, (ActionCapture Capture, LogWriter Writer, RoutineDetector Detector)>
         _sessions = new();
-
-    private ShortcutRunner? _shortcutRunner;
 
     // Root directory of the Python project — used to launch the orchestrator.
     // Matches the path used by deploy.ps1 and the VS Code workspace.
@@ -41,12 +43,7 @@ public class App : IExternalApplication
 
     public Result OnStartup(UIControlledApplication application)
     {
-        DiagLog("=== RevitLogger OnStartup ===");
-
-        // Initialise the shortcut runner (creates ExternalEvent + FileSystemWatcher).
-        // Must be done here, inside a valid Revit API context, for ExternalEvent.Create().
-        _shortcutRunner = new ShortcutRunner();
-        _shortcutRunner.Initialize();
+        DiagLog("=== RevitLogger OnStartup (observer-only mode) ===");
 
         var ctrl = application.ControlledApplication;
         ctrl.DocumentChanged  += OnDocumentChanged;
@@ -76,7 +73,6 @@ public class App : IExternalApplication
         }
         _sessions.Clear();
 
-        _shortcutRunner?.Dispose();
         return Result.Succeeded;
     }
 

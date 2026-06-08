@@ -1,15 +1,17 @@
 """
 BIM Personalization Orchestrator — main CLI entry point.
 
-Pipeline:
+Pipeline (updated architecture §4.1–4.2):
   1. Fetch k examples of a candidate routine from real/synthetic logs
-  2. Pattern Agent  (claude-opus-4-7 + extended thinking)
-       → analyses k examples → extracts a generalised Motif
+  2. Pattern Agent  (claude-opus-4-7 + adaptive thinking)
+       → analyses k examples → extracts a generalised Motif JSON
   3. Macro Agent (claude-sonnet-4-6)
-       → converts Motif → ordered Revit MCP tool call sequence
+       → queries live model state via model:query_state (grounding)
+       → maps Motif → ordered mcp-servers-for-revit tool call sequence
+       → checks preconditions
   4. Dry-run preview shown to the user
   5. User confirms → shortcut saved to disk
-  6. Optional: execute via Revit Public MCP Server (requires Revit 2027 running)
+  6. Optional: execute via mcp-servers-for-revit (requires Revit + plugin running)
 
 Usage:
     # List available routines from real logs
@@ -22,10 +24,10 @@ Usage:
     python orchestrator/agents.py --routine-id door_single_flush_tagged --k 5
 
 Environment variables:
-    ANTHROPIC_API_KEY  — required; your Anthropic API key
-    PATTERN_AGENT_MODEL — override Pattern Agent model (default: claude-opus-4-7)
-    MACRO_AGENT_MODEL   — override Macro Agent model (default: claude-sonnet-4-6)
-    REVIT_MCP_URL       — Revit Public MCP Server URL (default: http://localhost:3000)
+    ANTHROPIC_API_KEY         — required; your Anthropic API key
+    PATTERN_AGENT_MODEL       — override Pattern Agent model (default: claude-opus-4-7)
+    MACRO_AGENT_MODEL         — override Macro Agent model (default: claude-sonnet-4-6)
+    MCP_REVIT_BACKEND_URL     — mcp-servers-for-revit URL (default: http://localhost:3001)
 """
 from __future__ import annotations
 
@@ -45,9 +47,9 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mcp_server.log_reader import list_candidate_routines, get_routine_examples
-from mcp_server.revit_bridge import execute_mcp_tool_sequence
+from mcp_server.revit_bridge import execute_shortcut, execute_tool_sequence
 from orchestrator.pattern_agent import extract_motif
-from orchestrator.macro_agent import generate_tool_sequence
+from orchestrator.macro_agent import generate_tool_sequence, get_context_summary
 from shared.schemas import Motif, ShortcutConfig
 
 SHORTCUTS_DIR = Path(os.environ.get(
@@ -87,11 +89,21 @@ def run(
     auto_confirm: bool = False,
     execute: bool = False,
     execute_params: Optional[dict] = None,
+    fetch_context: bool = True,
 ) -> dict:
     """
-    Full pipeline: fetch → Pattern Agent → Macro Agent → confirm → save → (execute).
+    Full pipeline: fetch → Pattern Agent → Macro Agent (with grounding) → confirm → save → (execute).
 
-    Returns a summary dict describing what happened.
+    Args:
+        routine_id:     Candidate routine ID from the log reader.
+        k:              Number of example episodes to pass to the Pattern Agent.
+        auto_confirm:   Skip the interactive confirmation prompt.
+        execute:        Execute the shortcut in Revit after saving.
+        execute_params: Runtime parameter overrides for execution.
+        fetch_context:  Query live Revit model for grounding (requires Revit + plugin).
+
+    Returns:
+        Summary dict describing what happened (status, shortcut_id, motif, etc.).
     """
     # ── 0. API key check ──────────────────────────────────────────────────────
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -116,7 +128,7 @@ def run(
     _ok(f"Signature: {routine.action_signature}  confidence: {routine.confidence:.0%}")
 
     # ── 2. Pattern Agent ──────────────────────────────────────────────────────
-    _step("2/5", "Pattern Agent analysing examples (extended thinking)…")
+    _step("2/5", "Pattern Agent analysing examples (adaptive thinking)…")
     t0 = time.time()
 
     examples_payload = [ex.model_dump() for ex in routine.examples]
@@ -148,11 +160,11 @@ def run(
         print(f"  Preconditions: {motif['preconditions']}")
 
     # ── 3. Macro Agent ────────────────────────────────────────────────────────
-    _step("3/5", "Macro Agent generating MCP tool call sequence…")
+    _step("3/5", "Macro Agent querying model context + generating tool sequence…")
     t0 = time.time()
 
     try:
-        tool_sequence = generate_tool_sequence(motif)
+        tool_sequence = generate_tool_sequence(motif, fetch_context=fetch_context)
     except Exception as exc:
         _warn(f"Macro Agent failed: {exc}")
         return {"error": str(exc), "motif": motif}
@@ -211,22 +223,22 @@ def run(
 
     # ── 6. Optional live execution ────────────────────────────────────────────
     if execute:
-        _step("BONUS", "Executing via Revit Public MCP Server…")
-        exec_sequence = tool_sequence
-        if execute_params:
-            from mcp_server.server import _apply_param_overrides
-            exec_sequence = _apply_param_overrides(tool_sequence, execute_params)
+        _step("BONUS", "Executing via mcp-servers-for-revit…")
+        exec_result = execute_shortcut(
+            shortcut_id=shortcut_id,
+            params=execute_params,
+        )
+        result["execution_result"] = exec_result
 
-        exec_results = execute_mcp_tool_sequence(exec_sequence)
-        result["execution_results"] = exec_results
-
-        errors = [r for r in exec_results if "error" in r.get("result", {})]
-        if errors:
-            _warn(f"Execution had {len(errors)} error(s):")
-            for e in errors:
-                print(f"    {e['tool']}: {e['result']['error']}")
+        if exec_result.get("success"):
+            _ok(f"All {exec_result['steps_executed']} step(s) executed successfully.")
         else:
-            _ok(f"All {len(exec_results)} step(s) executed successfully in Revit.")
+            n_err = exec_result.get("errors", 0)
+            _warn(f"Execution had {n_err} error(s):")
+            for step_r in exec_result.get("results", []):
+                if "error" in step_r.get("result", {}):
+                    print(f"    step {step_r['step']} {step_r['tool']}: "
+                          f"{step_r['result']['error']}")
 
     return result
 
@@ -269,7 +281,9 @@ if __name__ == "__main__":
     parser.add_argument("--auto-confirm", action="store_true",
                         help="Skip the save-shortcut confirmation prompt")
     parser.add_argument("--execute", action="store_true",
-                        help="Execute the shortcut in Revit via the Public MCP Server")
+                        help="Execute the shortcut in Revit via mcp-servers-for-revit")
+    parser.add_argument("--no-context", action="store_true",
+                        help="Skip live model context query (useful when Revit is not running)")
     parser.add_argument("--params", type=str, default="{}",
                         help='JSON dict of runtime parameter overrides, e.g. \'{"Mark":"D-101"}\'')
 
@@ -293,6 +307,7 @@ if __name__ == "__main__":
         auto_confirm=args.auto_confirm,
         execute=args.execute,
         execute_params=execute_params,
+        fetch_context=not args.no_context,
     )
 
     print("\n" + "─" * 60)

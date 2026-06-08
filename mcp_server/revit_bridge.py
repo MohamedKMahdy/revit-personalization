@@ -1,196 +1,282 @@
 """
-Revit integration bridge — two separate channels:
+Revit integration bridge — connects to mcp-servers-for-revit.
 
-1. model_query(tool, args)
-   → READ-ONLY calls to the Autodesk Public MCP Server (localhost:3000)
-   → Used for model context queries ONLY: element counts, loaded families,
-     view info, precondition checks.
-   → The Autodesk Public MCP Server is confirmed read-only (Tech Preview, April 2026).
-     It CANNOT place elements, set parameters, or create tags.
+mcp-servers-for-revit is an open-source TypeScript MCP server + in-Revit plugin
+(https://github.com/simonmoreau/mcp-servers-for-revit) that provides the write
+execution surface for this thesis system.  The C# add-in is now OBSERVER ONLY —
+all model writes are delegated here.
 
-2. execute_shortcut(shortcut_id, params)
-   → Writes a pending_execution.json file to the shared IPC directory.
-   → The C# RevitLogger add-in watches this directory (FileSystemWatcher) and
-     executes the shortcut directly via the Revit API in a valid transaction.
-   → Returns the result written to execution_result_{shortcut_id}.json by the add-in.
+Two channels share the same backend:
 
-Architecture rationale:
-   The Autodesk Public MCP Server is read-only in its current Tech Preview.
-   Element creation, parameter setting, and tag creation require Revit API
-   transactions, which can only be initiated from a thread that holds the
-   Revit API context — i.e., from within our C# add-in.
-   File-based IPC (pending_execution.json) is the simplest reliable mechanism
-   for Python → C# communication without a custom HTTP server in the add-in.
+1. model_query / model_query_state  (READ tools)
+   → get_active_view, get_loaded_families, get_elements_by_category, etc.
+   → used by the Macro Agent to ground motif execution in current model state.
+
+2. execute_shortcut                  (WRITE tools)
+   → place_element, set_parameter, create_annotation_tag
+   → dispatches the Macro Agent's resolved tool-call sequence step by step.
+
+Transport: JSON-RPC 2.0 over HTTP to the mcp-servers-for-revit local server.
+Default URL: http://localhost:3001  (configurable via MCP_REVIT_BACKEND_URL env var).
 """
 from __future__ import annotations
 
-import json
+import copy
 import os
-import time
 from pathlib import Path
 
 import httpx
 
-# ── Shared directory for Python ↔ C# add-in communication ─────────────────────
-IPC_DIR = Path(os.environ.get(
-    "REVIT_PERSONALIZATION_IPC_DIR",
-    Path.home() / "AppData" / "Local" / "RevitPersonalization" / "ipc",
-))
-IPC_DIR.mkdir(parents=True, exist_ok=True)
-
-# ── Autodesk Public MCP Server (read-only model queries) ──────────────────────
-AUTODESK_MCP_BASE = os.environ.get("AUTODESK_MCP_URL", "http://localhost:3000")
+# ── Backend URL (mcp-servers-for-revit SSE/HTTP endpoint) ─────────────────────
+MCP_REVIT_URL = os.environ.get("MCP_REVIT_BACKEND_URL", "http://localhost:3001")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1.  Model context queries  (read-only → Autodesk Public MCP Server)
+# Internal: single JSON-RPC call to the backend
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def model_query(tool_name: str, arguments: dict) -> dict:
+def _call_backend(tool_name: str, arguments: dict, timeout: float = 30.0) -> dict:
     """
-    Send a single READ-ONLY query to the Autodesk Public MCP Server.
+    Dispatch one MCP tool call to mcp-servers-for-revit via JSON-RPC 2.0.
 
-    Use this for model context queries before suggesting or executing shortcuts:
-      - count_elements(category="Doors", level="L1")
-      - get_loaded_families(category="Doors")
-      - get_active_view()
-      - get_project_info()
-
-    NOTE: The Autodesk Public MCP Server (Revit 2027 Tech Preview) is read-only.
-    Any attempt to call a write tool will return an error from the server.
-    Use execute_shortcut() for all model modification operations.
+    Returns the tool result dict, or an error dict if the backend is unreachable.
     """
     payload = {
         "jsonrpc": "2.0",
-        "id":      1,
-        "method":  "tools/call",
-        "params":  {"name": tool_name, "arguments": arguments},
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
     }
     try:
         resp = httpx.post(
-            f"{AUTODESK_MCP_BASE}/",
+            f"{MCP_REVIT_URL}/",
             json=payload,
-            timeout=15.0,
+            timeout=timeout,
             headers={"Content-Type": "application/json"},
         )
         resp.raise_for_status()
-        return resp.json().get("result", {})
+        data = resp.json()
+        # JSON-RPC error object
+        if "error" in data:
+            return {"error": data["error"].get("message", str(data["error"]))}
+        return data.get("result", {})
     except httpx.ConnectError:
         return {
-            "error": "Autodesk Public MCP Server not reachable at localhost:3000. "
-                     "Is Revit 2027 open with the MCP server enabled?",
+            "error": (
+                f"mcp-servers-for-revit not reachable at {MCP_REVIT_URL}. "
+                "Ensure Revit is open and the mcp-servers-for-revit plugin is active."
+            ),
             "available": False,
         }
+    except httpx.HTTPStatusError as exc:
+        return {"error": f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"}
     except Exception as exc:
         return {"error": str(exc)}
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1.  Model context queries  (READ — used by Macro Agent for grounding)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def model_query(tool_name: str, arguments: dict) -> dict:
+    """
+    Send a read tool call to mcp-servers-for-revit.
+
+    Common tools:
+      get_active_view()
+      get_loaded_families(category="Doors")
+      get_elements_by_category(category="Doors", level="L1")
+      get_levels()
+      get_project_info()
+      get_selected_elements()
+    """
+    return _call_backend(tool_name, arguments)
+
+
+def model_query_state(query: str) -> dict:
+    """
+    High-level model state query — resolves a natural-language request about
+    current Revit model context by dispatching the appropriate read tool.
+
+    Examples:
+      "current selection"           -> get_selected_elements
+      "available door types"        -> get_loaded_families(category=Doors)
+      "active view"                 -> get_active_view
+      "levels"                      -> get_levels
+      "elements on level L1"        -> get_elements_by_category
+      "project info"                -> get_project_info
+
+    Used by the Macro Agent to ground motif execution before generating
+    the tool call sequence.
+    """
+    q = query.lower()
+
+    if "select" in q:
+        return _call_backend("get_selected_elements", {})
+    elif "door" in q and ("type" in q or "famil" in q):
+        return _call_backend("get_loaded_families", {"category": "Doors"})
+    elif "window" in q and ("type" in q or "famil" in q):
+        return _call_backend("get_loaded_families", {"category": "Windows"})
+    elif "wall" in q and ("type" in q or "famil" in q):
+        return _call_backend("get_loaded_families", {"category": "Walls"})
+    elif "level" in q:
+        return _call_backend("get_levels", {})
+    elif "view" in q:
+        return _call_backend("get_active_view", {})
+    elif "project" in q or "info" in q:
+        return _call_backend("get_project_info", {})
+    else:
+        # Treat the query as a category filter
+        return _call_backend("get_elements_by_category", {"category": query})
+
+
 def get_active_view() -> dict:
-    """Query the currently active Revit view (read-only)."""
-    return model_query("get_active_view", {})
-
-
-def count_elements_by_category(category: str, level: str = "") -> dict:
-    """Count elements of a given category, optionally filtered by level (read-only)."""
-    args = {"category": category}
-    if level:
-        args["level"] = level
-    return model_query("get_elements_by_category", args)
+    """Return the currently active Revit view."""
+    return _call_backend("get_active_view", {})
 
 
 def get_loaded_families(category: str) -> dict:
-    """List all loaded families for a given category (read-only)."""
-    return model_query("get_loaded_families", {"category": category})
+    """List all loaded families for a given Revit category."""
+    return _call_backend("get_loaded_families", {"category": category})
+
+
+def get_elements_by_category(category: str, level: str = "") -> dict:
+    """Get elements of a category, optionally filtered by level."""
+    args: dict = {"category": category}
+    if level:
+        args["level"] = level
+    return _call_backend("get_elements_by_category", args)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2.  Shortcut execution  (write → C# add-in via file-based IPC)
+# 2.  Shortcut execution  (WRITE — dispatches to mcp-servers-for-revit)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def execute_shortcut(
     shortcut_id: str,
     params: dict | None = None,
-    timeout_s: float = 30.0,
+    tool_sequence: list[dict] | None = None,
 ) -> dict:
     """
-    Execute a saved shortcut by signalling the C# RevitLogger add-in.
+    Execute a saved shortcut by dispatching its tool-call sequence to
+    mcp-servers-for-revit step by step.
 
-    Flow:
-      1. Python writes  ipc/pending_execution.json
-      2. C# FileSystemWatcher detects the file
-      3. C# reads ShortcutConfig, runs Place/SetParam/Tag in a Revit transaction
-      4. C# writes ipc/execution_result_{shortcut_id}.json
-      5. Python reads result and returns it
+    Under the updated architecture (section 4.1-4.2 of the methodology):
+      - The C# add-in is OBSERVER ONLY and does NOT execute model writes.
+      - All writes go through mcp-servers-for-revit (place_element,
+        set_parameter, create_annotation_tag).
+      - The Macro Agent resolves placeholders and calls this after confirmation.
 
     Args:
-        shortcut_id: ID of a saved ShortcutConfig (from generate_command).
-        params:      Runtime parameter overrides, e.g. {"Mark": "D-101"}.
-        timeout_s:   Seconds to wait for C# add-in to respond (default 30).
+        shortcut_id:    ID of the saved ShortcutConfig (for logging).
+        params:         Runtime parameter overrides, e.g. {"Mark": "D-101"}.
+        tool_sequence:  Pre-resolved tool call list.  If None, loaded from disk.
 
     Returns:
-        Result dict from the C# add-in, or an error dict if timeout/unavailable.
+        Summary dict: steps_executed, errors, per-step results, success flag.
     """
-    pending_path = IPC_DIR / "pending_execution.json"
-    result_path  = IPC_DIR / f"execution_result_{shortcut_id}.json"
+    # Load tool sequence from disk if not provided
+    if tool_sequence is None:
+        shortcuts_dir = Path(os.environ.get(
+            "REVIT_PERSONALIZATION_SHORTCUTS_DIR",
+            Path.home() / "AppData" / "Local" / "RevitPersonalization" / "shortcuts",
+        ))
+        shortcut_path = shortcuts_dir / f"{shortcut_id}.json"
+        if not shortcut_path.exists():
+            return {"error": f"Shortcut '{shortcut_id}' not found at {shortcut_path}"}
 
-    # Clean up any stale result file from a previous run
-    result_path.unlink(missing_ok=True)
+        from shared.schemas import ShortcutConfig
+        config = ShortcutConfig.model_validate_json(shortcut_path.read_text(encoding="utf-8"))
+        tool_sequence = config.mcp_tool_sequence
 
-    # Write the execution request
-    request = {
-        "shortcut_id": shortcut_id,
-        "params":      params or {},
-        "requested_at": time.time(),
-    }
-    pending_path.write_text(json.dumps(request, indent=2), encoding="utf-8")
+    # Apply runtime parameter overrides (fills {{ParamName}} placeholders)
+    if params:
+        tool_sequence = _apply_param_overrides(tool_sequence, params)
 
-    # Poll for the result file (C# add-in writes this when done)
-    deadline = time.time() + timeout_s
-    poll_interval = 0.25
-    while time.time() < deadline:
-        if result_path.exists():
-            try:
-                result = json.loads(result_path.read_text(encoding="utf-8"))
-                result_path.unlink(missing_ok=True)
-                return result
-            except Exception as exc:
-                return {"error": f"Could not read result file: {exc}"}
-        time.sleep(poll_interval)
+    results: list[dict] = []
+    last_element_id: int | None = None
 
-    # Timeout — clean up and explain
-    pending_path.unlink(missing_ok=True)
+    for i, step in enumerate(tool_sequence):
+        tool = step.get("tool", "")
+        arguments = dict(step.get("arguments", {}))
+
+        # Resolve the {{last_element_id}} placeholder set by a preceding Place step
+        for key, val in list(arguments.items()):
+            if val == "{{last_element_id}}":
+                if last_element_id is not None:
+                    arguments[key] = last_element_id
+                else:
+                    arguments.pop(key)  # skip unresolvable placeholder
+
+        result = _call_backend(tool, arguments)
+        results.append({
+            "step": i + 1,
+            "tool": tool,
+            "arguments": arguments,
+            "result": result,
+        })
+
+        # Track the last created/placed element for chaining subsequent steps
+        if "element_id" in result:
+            last_element_id = result["element_id"]
+        elif "id" in result:
+            last_element_id = result["id"]
+        elif "elementId" in result:
+            last_element_id = result["elementId"]
+
+    errors = [r for r in results if "error" in r.get("result", {})]
     return {
-        "error": (
-            f"Shortcut execution timed out after {timeout_s}s. "
-            "Ensure the RevitLogger add-in is loaded in Revit 2027 and "
-            "a project document is open."
-        ),
         "shortcut_id": shortcut_id,
+        "steps_executed": len(results),
+        "errors": len(errors),
+        "results": results,
+        "success": len(errors) == 0,
     }
 
+
+def execute_tool_sequence(
+    tool_sequence: list[dict],
+    params: dict | None = None,
+) -> list[dict]:
+    """
+    Execute a tool sequence directly (without a saved shortcut file).
+    Used by the Macro Agent dry-run -> confirm -> execute flow.
+    """
+    result = execute_shortcut(
+        shortcut_id="<inline>",
+        params=params,
+        tool_sequence=tool_sequence,
+    )
+    return result.get("results", [])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _apply_param_overrides(tool_sequence: list[dict], params: dict) -> list[dict]:
+    """Fill {{ParamName}} placeholders with runtime values from the params dict."""
+    result = copy.deepcopy(tool_sequence)
+    for step in result:
+        args = step.get("arguments", {})
+        for key, val in list(args.items()):
+            if isinstance(val, str) and val.startswith("{{") and val.endswith("}}"):
+                param_name = val[2:-2]
+                if param_name in params:
+                    args[key] = params[param_name]
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Legacy shim  (called by old orchestrator/agents.py code paths)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def execute_mcp_tool_sequence(tool_sequence: list[dict]) -> list[dict]:
     """
-    Legacy compatibility shim — called by mcp_server/server.py.
+    Legacy compatibility shim — now delegates directly to mcp-servers-for-revit.
 
-    DEPRECATED behaviour: previously forwarded tool calls to the Autodesk
-    Public MCP Server, which is read-only and cannot execute model changes.
-
-    New behaviour: returns a clear explanation instructing callers to use
-    execute_shortcut() instead.  The server.py execute_revit_command tool
-    already calls execute_shortcut() directly via shortcut_id, so this
-    function is only reached by old code paths.
+    Previously this wrote a file to the IPC directory for the C# add-in to pick
+    up.  Under the new architecture (section 4.1) the C# add-in is observer only;
+    all model writes go through mcp-servers-for-revit.
     """
-    return [
-        {
-            "tool":   step.get("tool", "unknown"),
-            "status": "skipped",
-            "reason": (
-                "The Autodesk Public MCP Server is read-only (Tech Preview, 2026). "
-                "Model modifications are executed by the C# RevitLogger add-in "
-                "via file-based IPC. Use execute_revit_command(shortcut_id=...) "
-                "from the MCP server tools instead."
-            ),
-        }
-        for step in tool_sequence
-    ]
+    return execute_tool_sequence(tool_sequence)
