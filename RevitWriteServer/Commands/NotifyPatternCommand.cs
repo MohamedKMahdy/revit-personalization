@@ -70,8 +70,10 @@ public class NotifyPatternCommand : CommandBase<string>
             ExecuteCallback = () => ExecuteToolSequence(capturedDoc, capturedSeq),
         };
 
-        // Show the dockable panel and load the pattern
-        UiApp.GetDockablePane(ChatPaneProvider.PanelId).Show();
+        // Bring the panel to focus and load the pattern
+        // (Show() is a no-op if already visible; it will un-minimise if collapsed)
+        try { UiApp.GetDockablePane(ChatPaneProvider.PanelId).Show(); }
+        catch { /* panel might already be visible */ }
         PaneProvider.Panel.LoadPattern(data);
 
         _notifyResult = "ok";

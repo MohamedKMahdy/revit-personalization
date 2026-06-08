@@ -39,6 +39,46 @@ public partial class ChatPanel : UserControl
         var apiKey = DotEnvReader.GetApiKey();
         if (!string.IsNullOrWhiteSpace(apiKey))
             _claude = new AnthropicStreamClient(apiKey);
+
+        ShowIdleState();
+    }
+
+    private void ShowIdleState()
+    {
+        TitleText.Text = "BIM Assistant";
+        MetaText.Text  = "Watching for repeated patterns…";
+
+        BtnExecute.IsEnabled = false;
+        BtnDismiss.IsEnabled = false;
+        BtnSend.IsEnabled    = false;
+        InputBox.IsEnabled   = false;
+        StatusBar.Visibility = Visibility.Collapsed;
+
+        _messages.Clear();
+
+        if (_claude is null)
+        {
+            _messages.Add(new ChatMessage
+            {
+                IsUser = false,
+                Text   = "⚠️  ANTHROPIC_API_KEY not set.\n\n" +
+                         "Set it as a Windows user environment variable, then restart Revit:\n\n" +
+                         "[System.Environment]::SetEnvironmentVariable(\n" +
+                         "  \"ANTHROPIC_API_KEY\", \"sk-ant-...\", \"User\")"
+            });
+        }
+        else
+        {
+            _messages.Add(new ChatMessage
+            {
+                IsUser = false,
+                Text   = "👋 Hello! I'm watching your modeling session.\n\n" +
+                         "When I notice you repeating the same sequence of steps " +
+                         "(placing a family, setting parameters, tagging), " +
+                         "I'll pop up here and offer to save it as a one-click shortcut.\n\n" +
+                         "Just keep modeling normally."
+            });
+        }
     }
 
     // ── Public API (called by NotifyPatternCommand on the UI thread) ──────────

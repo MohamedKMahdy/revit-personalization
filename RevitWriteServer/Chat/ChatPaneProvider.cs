@@ -26,6 +26,6 @@ public class ChatPaneProvider : IDockablePaneProvider
             DockPosition    = DockPosition.Right,
             MinimumWidth    = 320,
         };
-        data.VisibleByDefault = false;  // shown only when a pattern is detected
+        data.VisibleByDefault = true;   // always visible — user can dock/undock freely
     }
 }
