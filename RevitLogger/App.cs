@@ -2,7 +2,6 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Events;
 using Autodesk.Revit.UI;
-using System.Windows.Interop;
 
 namespace RevitLogger;
 
@@ -12,18 +11,18 @@ namespace RevitLogger;
 /// Responsibilities (thesis §4.1 — Observer-Only Add-in):
 ///   • Subscribes to application-level DocumentChanged / lifecycle events.
 ///   • Manages one session (LogWriter + ActionCapture + RoutineDetector) per open project.
-///   • Shows NotificationUI WPF toasts when RoutineDetector confirms a repeated pattern.
-///   • Launches the Python orchestrator when the user clicks "Learn as Shortcut".
+///   • When RoutineDetector fires, forwards the detected pattern to RevitWriteServer
+///     via PatternBridge (direct TCP call — no Python, no user click needed).
 ///
-/// THIS ADD-IN IS OBSERVER ONLY — it does NOT execute model writes.
-/// All model writes (place_element, set_parameter, create_annotation_tag) are
-/// delegated to mcp-servers-for-revit (TypeScript MCP server + in-Revit plugin)
-/// via the Python MCP server's execute_revit_command tool.
-///
-/// Architecture:
-///   RoutineDetector  — real-time CEI episode detection       (§4.1 ✓)
-///   NotificationUI   — proactive WPF toast suggestion        (§4.1 ✓)
-///   LaunchOrchestrator — spawns Python pipeline in a console (§4.2 ✓)
+/// Detection → panel flow (fully automatic):
+///   1. User models in Revit (place element, set params, tag).
+///   2. DocumentChanged fires → ActionCapture.ProcessEvent → RoutineDetector.Feed.
+///   3. After ≥ 2 identical episodes: RoutineDetected event fires on the UI thread.
+///   4. OnRoutineDetected starts Task.Run → PatternBridge.NotifyAsync (background).
+///   5. PatternBridge sends notify_pattern to RevitWriteServer TCP on localhost:8080.
+///   6. RevitWriteServer raises ExternalEvent → NotifyPatternCommand runs on UI thread.
+///   7. BIM Assistant dockable panel activates and Claude greets the user.
+///   No toast, no Python, no button clicks.
 /// </summary>
 [Transaction(TransactionMode.Manual)]
 [Regeneration(RegenerationOption.Manual)]
@@ -32,12 +31,6 @@ public class App : IExternalApplication
     // docKey → per-document session triple
     private readonly Dictionary<string, (ActionCapture Capture, LogWriter Writer, RoutineDetector Detector)>
         _sessions = new();
-
-    // Root directory of the Python project — used to launch the orchestrator.
-    // Matches the path used by deploy.ps1 and the VS Code workspace.
-    private static readonly string ProjectDir = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        "revit-personalization");
 
     // ── IExternalApplication ──────────────────────────────────────────────────
 
@@ -173,55 +166,22 @@ public class App : IExternalApplication
         _sessions.Remove(key);
     }
 
-    // ── Routine detection → notification ─────────────────────────────────────
+    // ── Routine detection → BIM Assistant panel ───────────────────────────────
 
     /// <summary>
     /// Called on the Revit UI thread when RoutineDetector confirms a repeated pattern.
-    /// Shows a WPF toast. DocumentChanged fires on the UI thread, so this is safe.
+    ///
+    /// Fires PatternBridge on a background thread — NOT inline here.
+    /// PatternBridge makes a TCP call to RevitWriteServer which raises an ExternalEvent.
+    /// ExternalEvents need the UI thread to dispatch, so if we blocked here we'd deadlock.
     /// </summary>
     private void OnRoutineDetected(object? sender, RoutineDetectedEventArgs args)
     {
-        DiagLog($"OnRoutineDetected: id={args.Id} count={args.Count} label={args.Label}");
-        try
-        {
-            var title = $"Routine Detected ({args.Count}× repeated)";
-            var ui    = new NotificationUI(args.Id, title, args.Label, LaunchOrchestrator);
+        DiagLog($"OnRoutineDetected: id={args.Id} count={args.Count} label='{args.Label}'");
 
-            // Set Revit as owner so the toast floats above Revit but below other apps
-            var helper = new WindowInteropHelper(ui);
-            helper.Owner = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
-
-            ui.Show();
-        }
-        catch (Exception ex)
-        {
-            DiagLog($"OnRoutineDetected: NotificationUI error: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Launches the Python orchestrator in a visible console window.
-    /// The user can watch the agent pipeline produce a shortcut.
-    /// </summary>
-    private static void LaunchOrchestrator(string routineId)
-    {
-        try
-        {
-            DiagLog($"LaunchOrchestrator: routine_id={routineId}");
-            var startInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName         = "cmd.exe",
-                // /k keeps the window open after the script finishes so the user can read output
-                Arguments        = $"/k python orchestrator/agents.py --routine-id {routineId} --k 5",
-                WorkingDirectory = ProjectDir,
-                UseShellExecute  = true,   // opens a new console window
-            };
-            System.Diagnostics.Process.Start(startInfo);
-        }
-        catch (Exception ex)
-        {
-            DiagLog($"LaunchOrchestrator error: {ex.Message}");
-        }
+        // LatestEpisode is a fresh List<ActionRecord> copy (see RoutineDetector.FinalizeEpisode),
+        // so it is safe to hand off to a background task without any locking.
+        _ = Task.Run(() => PatternBridge.NotifyAsync(args));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
