@@ -75,16 +75,25 @@
                      Foreground="#AADCF5" FontSize="11" Margin="0,2,0,0"/>
         </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+          <!-- Shown only in idle state -->
+          <Button x:Name="BtnTest" Content="⚡ Test"
+                  Style="{StaticResource BtnStyle}"
+                  Background="#44FFFFFF" Foreground="White"
+                  Padding="8,6" FontSize="12"
+                  Click="BtnTest_Click"/>
+          <!-- Shown when a pattern is loaded -->
           <Button x:Name="BtnExecute" Content="▶ Execute"
                   Style="{StaticResource BtnStyle}"
                   Background="#27AE60" Foreground="White"
                   Padding="10,6" FontSize="12" FontWeight="Medium"
+                  Visibility="Collapsed"
                   Click="BtnExecute_Click"/>
           <Button x:Name="BtnDismiss" Content="✕ Dismiss"
                   Style="{StaticResource BtnStyle}"
                   Background="#44FFFFFF" Foreground="White"
                   Padding="8,6" FontSize="12"
-                  Margin="6,0,0,0" Click="BtnDismiss_Click"/>
+                  Margin="6,0,0,0" Visibility="Collapsed"
+                  Click="BtnDismiss_Click"/>
         </StackPanel>
       </Grid>
     </Border>

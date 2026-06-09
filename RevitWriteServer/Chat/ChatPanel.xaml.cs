@@ -48,11 +48,14 @@ public partial class ChatPanel : UserControl
         TitleText.Text = "BIM Assistant";
         MetaText.Text  = "Watching for repeated patterns…";
 
-        BtnExecute.IsEnabled = false;
-        BtnDismiss.IsEnabled = false;
-        BtnSend.IsEnabled    = false;
-        InputBox.IsEnabled   = false;
-        StatusBar.Visibility = Visibility.Collapsed;
+        BtnTest.Visibility    = Visibility.Visible;
+        BtnExecute.Visibility = Visibility.Collapsed;
+        BtnDismiss.Visibility = Visibility.Collapsed;
+        BtnExecute.IsEnabled  = false;
+        BtnDismiss.IsEnabled  = false;
+        BtnSend.IsEnabled     = false;
+        InputBox.IsEnabled    = false;
+        StatusBar.Visibility  = Visibility.Collapsed;
 
         _messages.Clear();
 
@@ -96,11 +99,14 @@ public partial class ChatPanel : UserControl
         _busy  = false;
         _executeCallback = data.ExecuteCallback;
 
-        BtnExecute.IsEnabled = true;
-        BtnDismiss.IsEnabled = true;
-        BtnSend.IsEnabled    = true;
-        InputBox.IsEnabled   = true;
-        StatusBar.Visibility = Visibility.Collapsed;
+        BtnTest.Visibility    = Visibility.Collapsed;
+        BtnExecute.Visibility = Visibility.Visible;
+        BtnDismiss.Visibility = Visibility.Visible;
+        BtnExecute.IsEnabled  = true;
+        BtnDismiss.IsEnabled  = true;
+        BtnSend.IsEnabled     = true;
+        InputBox.IsEnabled    = true;
+        StatusBar.Visibility  = Visibility.Collapsed;
 
         // Update header
         TitleText.Text = $"🔍 {data.Label}";
@@ -294,6 +300,46 @@ public partial class ChatPanel : UserControl
     }
 
     // ── Event handlers ────────────────────────────────────────────────────────
+
+    private void BtnTest_Click(object sender, RoutedEventArgs e)
+    {
+        // Load a hardcoded sample pattern so you can test the chat
+        // without RevitLogger needing to detect a real pattern first.
+        var motifJson = System.Text.Json.Nodes.JsonNode.Parse("""
+            {
+              "steps": [
+                {"action": "Place",    "family_type": "M_Single-Flush : 900x2100mm"},
+                {"action": "SetParam", "param_name": "FireRating",    "param_value": "60"},
+                {"action": "SetParam", "param_name": "Mark",          "param_value": "D-101"},
+                {"action": "SetParam", "param_name": "Width",         "param_value": "900"},
+                {"action": "Tag",      "family_type": "Door Tag"}
+              ]
+            }
+            """);
+
+        var seqJson = System.Text.Json.Nodes.JsonNode.Parse("""
+            [
+              {"tool":"place_element",         "arguments":{"family_type":"M_Single-Flush","location":{"x":0,"y":0,"z":0}}},
+              {"tool":"set_parameter",         "arguments":{"element_id":"{{last_element_id}}","parameter_name":"FireRating","value":"60"}},
+              {"tool":"set_parameter",         "arguments":{"element_id":"{{last_element_id}}","parameter_name":"Mark","value":"D-101"}},
+              {"tool":"set_parameter",         "arguments":{"element_id":"{{last_element_id}}","parameter_name":"Width","value":900}},
+              {"tool":"create_annotation_tag", "arguments":{"element_id":"{{last_element_id}}","tag_family":"Door Tag"}}
+            ]
+            """)?.AsArray();
+
+        var data = new PatternData
+        {
+            Label        = "Place Door + Set 4 Params + Tag  [SAMPLE]",
+            Count        = 5,
+            Motif        = motifJson,
+            ToolSequence = seqJson,
+            // No real ExecuteCallback in test mode — show a message instead
+            ExecuteCallback = () => throw new InvalidOperationException(
+                "This is a test pattern — open a Revit project first, " +
+                "then trigger a real pattern via RevitLogger."),
+        };
+        LoadPattern(data);
+    }
 
     private void BtnExecute_Click(object sender, RoutedEventArgs e) => UserSays("Execute");
     private void BtnDismiss_Click(object sender, RoutedEventArgs e) => UserSays("Dismiss");
