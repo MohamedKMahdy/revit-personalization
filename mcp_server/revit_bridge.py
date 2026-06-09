@@ -464,62 +464,77 @@ def execute_tool_sequence(
 
 def _dispatch_tool(tool: str, arguments: dict) -> dict:
     """
-    Map motif tool names (as used in ShortcutConfig.mcp_tool_sequence) to the
-    actual mcp-servers-for-revit backend commands, handling schema differences.
+    Map motif tool names to RevitWriteServer TCP commands.
+
+    RevitWriteServer command signatures (our custom C# plugin on port 8080):
+      create_point_based_element  — typeId (int), x, y, z (double), levelId (int, opt)
+      set_element_parameter       — elementId (int), parameterName (str), value (any)
+      create_element_tag          — elementId (int), tagTypeId (int, opt)
     """
     if tool == "place_element":
-        # Motif: place_element(family_type, location)
-        # Backend: create_point_based_element(data=[{typeId, locationPoint, ...}])
         family_type = arguments.get("family_type", arguments.get("family_name", ""))
         loc = arguments.get("location", {})
-        if isinstance(loc, str):
-            loc = {}  # placeholder not resolved yet
-        return place_element(
-            family_name=family_type,
-            location_x=loc.get("x", 0.0),
-            location_y=loc.get("y", 0.0),
-            location_z=loc.get("z", 0.0),
-            width=arguments.get("width", 900.0),
-            height=arguments.get("height", 2100.0),
-            host_wall_id=arguments.get("host_wall_id"),
-        )
+        if not isinstance(loc, dict):
+            loc = {}
+
+        # Resolve family name → typeId via get_available_family_types
+        type_id = arguments.get("typeId") or get_family_type_id(family_type)
+
+        params: dict = {
+            "x": loc.get("x", 0.0),
+            "y": loc.get("y", 0.0),
+            "z": loc.get("z", 0.0),
+        }
+        if type_id is not None:
+            params["typeId"] = type_id
+        if arguments.get("levelId"):
+            params["levelId"] = arguments["levelId"]
+
+        return _call_plugin("create_point_based_element", params)
 
     elif tool == "set_parameter":
-        # Motif: set_parameter(element_id, parameter_name, value)
-        return set_element_parameter(
-            element_id=int(arguments.get("element_id", 0)),
-            param_name=arguments.get("parameter_name", ""),
-            value=arguments.get("value", ""),
-        )
+        elem_id = arguments.get("element_id") or arguments.get("elementId") or 0
+        param_name = arguments.get("parameter_name") or arguments.get("parameterName") or ""
+        value = arguments.get("value", "")
+
+        return _call_plugin("set_element_parameter", {
+            "elementId":     int(elem_id),
+            "parameterName": param_name,
+            "value":         value,
+        })
 
     elif tool == "create_annotation_tag":
-        # Motif: create_annotation_tag(element_id, tag_family)
-        return create_element_tag(
-            element_id=int(arguments.get("element_id", 0)),
-            tag_family_name=arguments.get("tag_family", ""),
-        )
+        elem_id = arguments.get("element_id") or arguments.get("elementId") or 0
+        params: dict = {"elementId": int(elem_id)}
+        # tagTypeId is optional — our C# command auto-picks by element category
+        if arguments.get("tagTypeId"):
+            params["tagTypeId"] = arguments["tagTypeId"]
+
+        return _call_plugin("create_element_tag", params)
 
     else:
-        # Pass through any other tool directly to the plugin
         return _call_plugin(tool, arguments)
 
 
 def _extract_element_id(result: dict) -> int | None:
-    """Extract the placed element's ID from a create_point_based_element result."""
+    """
+    Extract the placed element's ID from a create_point_based_element result.
+
+    RevitWriteServer returns: {"elementId": 123, "x": 0.0, "y": 0.0, "z": 0.0}
+    """
     if not isinstance(result, dict):
         return None
-    # Try common field names in the result
-    for key in ("elementId", "element_id", "id", "ElementId"):
+    for key in ("elementId", "element_id", "ElementId", "id"):
         val = result.get(key)
         if val is not None:
             try:
                 return int(val)
             except (ValueError, TypeError):
                 pass
-    # Check nested results list
-    items = result.get("results", result.get("elements", []))
-    if items and isinstance(items, list) and isinstance(items[0], dict):
-        return _extract_element_id(items[0])
+    # Unwrap one level of nesting (some older responses wrap in "result": {...})
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        return _extract_element_id(inner)
     return None
 
 
