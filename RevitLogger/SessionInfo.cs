@@ -37,19 +37,48 @@ public class SessionInfo
     [JsonPropertyName("document_title")]
     public string DocumentTitle { get; set; } = "";
 
+    /// <summary>
+    /// Revit Application.Username — the logged-in user or license holder.
+    /// Matches supervisor's SessionSchema.userName (generalBIMlog §2.1).
+    /// </summary>
+    [JsonPropertyName("user_name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? UserName { get; set; }
+
+    /// <summary>
+    /// doc.CreationGUID — stable project identifier, survives SaveAs and path moves.
+    /// More reliable than path-based keys (supervisor's ProjectFileManager §4.2).
+    /// </summary>
+    [JsonPropertyName("project_guid")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ProjectGuid { get; set; }
+
     public static SessionInfo Create(Document doc, string sessionId, string revitVersion)
     {
         var pathHash = string.IsNullOrEmpty(doc.PathName)
             ? "unsaved"
             : HashPath(doc.PathName);
 
+        string? userName = null;
+        try { userName = doc.Application?.Username; } catch { /* not available in all contexts */ }
+
+        string? projectGuid = null;
+        try
+        {
+            var g = doc.CreationGUID;
+            if (g != Guid.Empty) projectGuid = g.ToString();
+        }
+        catch { /* fallback: leave null */ }
+
         return new SessionInfo
         {
-            SessionId      = sessionId,
-            TimestampUtc   = DateTime.UtcNow.ToString("o"),
-            RevitVersion   = revitVersion,
-            DocumentHash   = pathHash,
-            DocumentTitle  = doc.Title,
+            SessionId     = sessionId,
+            TimestampUtc  = DateTime.UtcNow.ToString("o"),
+            RevitVersion  = revitVersion,
+            DocumentHash  = pathHash,
+            DocumentTitle = doc.Title,
+            UserName      = string.IsNullOrWhiteSpace(userName) ? null : userName,
+            ProjectGuid   = projectGuid,
         };
     }
 

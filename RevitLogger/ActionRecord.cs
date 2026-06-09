@@ -110,6 +110,40 @@ public class ActionRecord
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public object? ParamValueAfter { get; set; }
 
+    // ── Geometry fields (supervisor's GeometryExtractor §3.3) ────────────
+    /// <summary>
+    /// Revit internal units (decimal feet). Populated for Place events only.
+    /// LocationPoint for hosted elements (Doors, Windows, Furniture);
+    /// curve midpoint for linear elements (Walls, Beams).
+    /// </summary>
+    [JsonPropertyName("location_x")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? LocationX { get; set; }
+
+    [JsonPropertyName("location_y")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? LocationY { get; set; }
+
+    [JsonPropertyName("location_z")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? LocationZ { get; set; }
+
+    // ── Host / orientation (Doors, Windows — supervisor's CategoryExtractor) ─
+    /// <summary>ElementId of the hosting element (e.g. the Wall a Door lives in).</summary>
+    [JsonPropertyName("host_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? HostId { get; set; }
+
+    /// <summary>True when the element's facing direction is flipped relative to its host.</summary>
+    [JsonPropertyName("flip_facing")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? FlipFacing { get; set; }
+
+    /// <summary>True when the element's hand (swing) direction is flipped relative to its host.</summary>
+    [JsonPropertyName("flip_hand")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? FlipHand { get; set; }
+
     // ── Tag / Annotation fields ───────────────────────────────────────────
     [JsonPropertyName("tag_family_name")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

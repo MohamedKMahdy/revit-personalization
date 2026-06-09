@@ -2,6 +2,7 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Events;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Events;
 
 namespace RevitLogger;
 
@@ -43,6 +44,10 @@ public class App : IExternalApplication
         ctrl.DocumentOpened   += OnDocumentOpened;
         ctrl.DocumentCreated  += OnDocumentCreated;
         ctrl.DocumentClosing  += OnDocumentClosing;
+        ctrl.DocumentSaving   += OnDocumentSaving;
+        ctrl.DocumentSavedAs  += OnDocumentSavedAs;
+
+        application.ViewActivated += OnViewActivated;
 
         DiagLog("OnStartup: event subscriptions registered");
         return Result.Succeeded;
@@ -57,6 +62,10 @@ public class App : IExternalApplication
         ctrl.DocumentOpened   -= OnDocumentOpened;
         ctrl.DocumentCreated  -= OnDocumentCreated;
         ctrl.DocumentClosing  -= OnDocumentClosing;
+        ctrl.DocumentSaving   -= OnDocumentSaving;
+        ctrl.DocumentSavedAs  -= OnDocumentSavedAs;
+
+        application.ViewActivated -= OnViewActivated;
 
         foreach (var (_, session) in _sessions)
         {
@@ -83,7 +92,8 @@ public class App : IExternalApplication
 
             var addedCount    = e.GetAddedElementIds()?.Count   ?? 0;
             var modifiedCount = e.GetModifiedElementIds()?.Count ?? 0;
-            DiagLog($"OnDocumentChanged: key={key} found={found} added={addedCount} modified={modifiedCount}");
+            var deletedCount  = e.GetDeletedElementIds()?.Count  ?? 0;
+            DiagLog($"OnDocumentChanged: key={key} found={found} added={addedCount} modified={modifiedCount} deleted={deletedCount}");
 
             if (found)
                 session.Capture.ProcessEvent(e);
@@ -114,6 +124,28 @@ public class App : IExternalApplication
     {
         DiagLog($"OnDocumentClosing: title={e.Document?.Title}");
         EndSession(e.Document);
+    }
+
+    private void OnDocumentSaving(object? sender, DocumentSavingEventArgs e)
+    {
+        // The LogWriter flushes to disk after every record, so no explicit flush is needed.
+        // Log a checkpoint marker for session timeline analysis.
+        DiagLog($"OnDocumentSaving: title={e.Document?.Title}");
+    }
+
+    private void OnDocumentSavedAs(object? sender, DocumentSavedAsEventArgs e)
+    {
+        // The session key is doc.CreationGUID which does NOT change on SaveAs,
+        // so no re-keying is needed. Just log it for diagnostics.
+        DiagLog($"OnDocumentSavedAs: title={e.Document?.Title} newPath={e.Document?.PathName}");
+    }
+
+    private void OnViewActivated(object? sender, ViewActivatedEventArgs e)
+    {
+        // Track view switches for multi-project diagnostics.
+        // The DocKey (CreationGUID) is stable even when the user switches views,
+        // so we don't need to update session mappings here.
+        DiagLog($"OnViewActivated: view='{e.CurrentActiveView?.Name}' doc='{e.CurrentActiveView?.Document?.Title}'");
     }
 
     // ── Session management ────────────────────────────────────────────────────
@@ -187,11 +219,21 @@ public class App : IExternalApplication
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Stable document key — full lowercased path for saved docs, title for unsaved.
-    /// Using the path string (not a hash) makes key comparison fully deterministic.
+    /// Stable document key using doc.CreationGUID — a Guid assigned once at project
+    /// creation that survives SaveAs, path moves, and round-trips through Revit.
+    /// Falls back to the path or title for edge cases where the API is unavailable.
+    ///
+    /// Matches the supervisor's generalBIMlog ProjectFileManager keying strategy.
     /// </summary>
     private static string DocKey(Document doc)
     {
+        try
+        {
+            var guid = doc.CreationGUID;
+            if (guid != Guid.Empty) return guid.ToString();
+        }
+        catch { /* fallback for unusual document states */ }
+
         if (!string.IsNullOrEmpty(doc.PathName))
             return doc.PathName.ToLowerInvariant();
         return "unsaved::" + doc.Title.ToLowerInvariant();
