@@ -49,8 +49,9 @@ app     = FastAPI(title="BIM Pattern Assistant")
 _client = anthropic.AsyncAnthropic()
 
 # ── In-memory session state (one conversation at a time) ─────────────────────
-_pattern: dict       = {}
-_history: list[dict] = []   # Anthropic messages (alternating user/assistant)
+_pattern: dict          = {}
+_history: list[dict]    = []   # Anthropic messages (alternating user/assistant)
+_last_element_id: int | None = None   # element placed by last execution
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # System prompt
@@ -79,7 +80,17 @@ parameters if needed, then execute or dismiss based on their decision.
 - If the user wants to change a parameter (e.g. "change the mark to D-201"), acknowledge
   the change in your reply. The execution engine will apply it.
 - Be friendly and concise. You are saving a BIM professional time.
-"""
+
+━━━ POST-EXECUTION FOLLOW-UP ACTIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+After the shortcut has been executed you may be asked follow-up questions.
+You can trigger these Revit actions by outputting the exact token on its own line:
+
+  ##ISOLATE##   — isolate the last placed element in the current view
+  ##ZOOM##      — zoom the view to fit the last placed element
+  ##SELECT##    — select the last placed element
+
+Only output a token when the user clearly asks for that action.
+{post_exec_context}"""
 
 
 def _build_system() -> str:
@@ -110,7 +121,13 @@ def _build_system() -> str:
 
     summary   = "\n".join(lines)
     steps_str = json.dumps(seq, indent=2) if seq else "[]"
-    return _SYSTEM_TEMPLATE.format(summary=summary, steps=steps_str)
+
+    if _last_element_id:
+        post_exec = f"\nThe shortcut was already executed. Last placed element ID: {_last_element_id}."
+    else:
+        post_exec = ""
+
+    return _SYSTEM_TEMPLATE.format(summary=summary, steps=steps_str, post_exec_context=post_exec)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -135,10 +152,11 @@ async def _stream(messages: list[dict], append_to_history: bool = True) -> Async
 
     # Signal completion + any action token
     action = None
-    if "##EXECUTE##" in full:
-        action = "execute"
-    elif "##DISMISS##" in full:
-        action = "dismiss"
+    if   "##EXECUTE##"  in full: action = "execute"
+    elif "##DISMISS##"  in full: action = "dismiss"
+    elif "##ISOLATE##"  in full: action = "isolate"
+    elif "##ZOOM##"     in full: action = "zoom"
+    elif "##SELECT##"   in full: action = "select"
 
     yield f"data: {json.dumps({'done': True, 'action': action})}\n\n"
 
@@ -202,11 +220,48 @@ async def api_chat(msg: MessageIn):
 @app.post("/api/execute")
 async def api_execute():
     """Run the shortcut in Revit."""
+    global _last_element_id
     seq = _pattern.get("tool_sequence", [])
     if not seq:
         return {"error": "No tool sequence loaded", "success": False}
     result = execute_shortcut("<chatbot>", tool_sequence=seq)
+    # Track the last placed element ID for follow-up actions
+    for step in result.get("results", []):
+        eid = (step.get("result") or {}).get("elementId")
+        if eid:
+            _last_element_id = int(eid)
+            break
     return result
+
+
+@app.post("/api/isolate")
+async def api_isolate():
+    """Isolate the last placed element in the current Revit view."""
+    if not _last_element_id:
+        return {"error": "No element to isolate — run the shortcut first", "success": False}
+    from mcp_server.revit_bridge import _call_plugin
+    result = _call_plugin("isolate_element", {"elementId": _last_element_id})
+    return {**result, "elementId": _last_element_id}
+
+
+@app.post("/api/zoom")
+async def api_zoom():
+    """Zoom the active view to the last placed element."""
+    if not _last_element_id:
+        return {"error": "No element to zoom to — run the shortcut first", "success": False}
+    from mcp_server.revit_bridge import _call_plugin
+    result = _call_plugin("zoom_to_element", {"elementId": _last_element_id})
+    return {**result, "elementId": _last_element_id}
+
+
+@app.post("/api/select")
+async def api_select():
+    """Select the last placed element in Revit."""
+    if not _last_element_id:
+        return {"error": "No element to select — run the shortcut first", "success": False}
+    from mcp_server.revit_bridge import _call_plugin
+    result = _call_plugin("select_element", {"elementId": _last_element_id})
+    return {**result, "elementId": _last_element_id}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -315,8 +370,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 
 <script>
 "use strict";
-let _busy   = false;
-let _done   = false;
+let _busy      = false;  // true while Claude is streaming a reply
+let _done      = false;  // true after dismiss (chat fully closed)
+let _executing = false;  // true while /api/execute is in-flight
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 const chat   = () => document.getElementById('chat');
@@ -373,15 +429,15 @@ function unlockUI(){
   inp().focus();
 }
 function freezeActions(){
+  // Only locks the Execute/Dismiss buttons — chat stays open
   _done = true;
   document.getElementById('btn-exec').disabled = true;
   document.getElementById('btn-dis').disabled  = true;
-  inp().disabled = true;
-  document.getElementById('btn-send').disabled = true;
 }
 function unfreezeActions(){
-  _done = false;
-  _busy = false;
+  _done      = false;
+  _busy      = false;
+  _executing = false;
   document.getElementById('btn-exec').disabled = false;
   document.getElementById('btn-exec').textContent = '▶ Execute';
   document.getElementById('btn-dis').disabled  = false;
@@ -419,13 +475,16 @@ async function streamFrom(url, body){
       if(ev.t !== undefined){
         full += ev.t;
         // Strip control tokens from display
-        const disp = full.replace(/##EXECUTE##|##DISMISS##/g,'').trim();
+        const disp = full.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##/g,'').trim();
         bubble.innerHTML = esc(disp);
         chat().scrollTop = 99999;
       }
       if(ev.done){
-        if(ev.action === 'execute') runExec();
-        else if(ev.action === 'dismiss') runDismiss();
+        if     (ev.action === 'execute')  runExec();
+        else if(ev.action === 'dismiss')  runDismiss();
+        else if(ev.action === 'isolate')  runAction('/api/isolate', 'Isolating element');
+        else if(ev.action === 'zoom')     runAction('/api/zoom',    'Zooming to element');
+        else if(ev.action === 'select')   runAction('/api/select',  'Selecting element');
         else unlockUI();
       }
     }
@@ -434,8 +493,8 @@ async function streamFrom(url, body){
 
 /* ── Actions ────────────────────────────────────────────────────── */
 async function runExec(){
-  // Cancel any in-flight Claude stream and freeze UI
-  _busy = false;
+  _busy      = false;
+  _executing = true;
   freezeActions();
 
   const btn = document.getElementById('btn-exec');
@@ -446,18 +505,38 @@ async function runExec(){
     const r   = await fetch('/api/execute', {method:'POST'});
     const res = await r.json();
     if(res.success || (res.steps_executed != null && res.steps_executed > 0)){
-      setStatus(`✓ Done — ${res.steps_executed} step(s) executed in Revit`, 'success');
-      addBubble('bot', `Done! Applied ${res.steps_executed} step(s) to your Revit model.`);
+      setStatus(`✓ Done — ${res.steps_executed} step(s) executed`, 'success');
+      addBubble('bot', `Done! Applied ${res.steps_executed} step(s) to your model. You can ask follow-up questions, isolate the element, zoom to it, or run it again.`);
+      // Re-enable everything for follow-up
+      unfreezeActions();
+      btn.textContent = '▶ Execute Again';
+      inp().placeholder = 'Ask a follow-up question…';
+      inp().focus();
     } else {
       const err = res.error || JSON.stringify(res);
       setStatus(`✗ ${err}`, 'error');
       addBubble('bot', `Something went wrong: ${err}`);
-      unfreezeActions();   // ← let user retry
+      unfreezeActions();
     }
   } catch(e){
     setStatus(`✗ Network error: ${e.message}`, 'error');
     addBubble('bot', `Could not reach the server: ${e.message}`);
-    unfreezeActions();     // ← let user retry
+    unfreezeActions();
+  }
+}
+
+async function runAction(endpoint, label){
+  setStatus(`⟳ ${label}…`, 'info');
+  try{
+    const r   = await fetch(endpoint, {method:'POST'});
+    const res = await r.json();
+    if(res.error){
+      setStatus(`✗ ${res.error}`, 'error');
+    } else {
+      setStatus(`✓ ${label} done`, 'success');
+    }
+  } catch(e){
+    setStatus(`✗ ${e.message}`, 'error');
   }
 }
 
@@ -478,7 +557,7 @@ function clickDismiss(){
 }
 
 function send(){
-  if(_busy || _done) return;
+  if(_busy || _executing) return;  // don't block on _done — allow follow-up after execute
   const text = inp().value.trim();
   if(!text) return;
   inp().value = '';
@@ -519,12 +598,15 @@ async function init(){
       let ev; try{ ev=JSON.parse(line.slice(6)); }catch{ continue; }
       if(ev.t !== undefined){
         full += ev.t;
-        bubble.innerHTML = esc(full.replace(/##EXECUTE##|##DISMISS##/g,'').trim());
+        bubble.innerHTML = esc(full.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##/g,'').trim());
         chat().scrollTop = 99999;
       }
       if(ev.done){
-        if(ev.action === 'execute') runExec();
-        else if(ev.action === 'dismiss') runDismiss();
+        if     (ev.action === 'execute')  runExec();
+        else if(ev.action === 'dismiss')  runDismiss();
+        else if(ev.action === 'isolate')  runAction('/api/isolate', 'Isolating element');
+        else if(ev.action === 'zoom')     runAction('/api/zoom',    'Zooming to element');
+        else if(ev.action === 'select')   runAction('/api/select',  'Selecting element');
         else unlockUI();
       }
     }
