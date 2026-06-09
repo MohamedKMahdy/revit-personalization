@@ -50,11 +50,7 @@ public class PlaceElementCommand : CommandBase<PlaceElementResult>
         if (doc.GetElement(symbolId) is not FamilySymbol symbol)
             throw new ArgumentException($"No FamilySymbol found with id {_typeId}");
 
-        // Activate the symbol if needed (required before first placement)
-        if (!symbol.IsActive)
-            symbol.Activate();
-
-        // Resolve level
+        // Resolve level before opening the transaction (read-only query)
         Level? level = null;
         if (_levelId.HasValue)
         {
@@ -62,7 +58,6 @@ public class PlaceElementCommand : CommandBase<PlaceElementResult>
         }
         else
         {
-            // Use the first level in the document
             level = new FilteredElementCollector(doc)
                 .OfClass(typeof(Level))
                 .Cast<Level>()
@@ -74,6 +69,13 @@ public class PlaceElementCommand : CommandBase<PlaceElementResult>
 
         using var tx = new Transaction(doc, "RevitWriteServer: PlaceElement");
         tx.Start();
+
+        // Activate must be inside a transaction (Revit 2022+ requirement)
+        if (!symbol.IsActive)
+        {
+            symbol.Activate();
+            doc.Regenerate();
+        }
 
         FamilyInstance? instance;
         if (level != null)

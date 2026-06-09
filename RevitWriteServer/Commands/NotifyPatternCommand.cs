@@ -165,6 +165,10 @@ public class NotifyPatternCommand : CommandBase<string>
     }
 
     // ── Tool sequence execution (always called inside ExternalEvent context) ──
+    //
+    // Each command (PlaceElementCommand, SetParameterCommand, TagElementCommand)
+    // manages its own Transaction internally. Do NOT wrap this in an outer
+    // Transaction — Revit forbids nested Transaction objects and will throw.
 
     private static void ExecuteToolSequence(Document doc, JsonArray? toolSequence)
     {
@@ -172,9 +176,6 @@ public class NotifyPatternCommand : CommandBase<string>
             throw new InvalidOperationException("Empty tool sequence");
 
         long lastElementId = -1;
-
-        using var tx = new Transaction(doc, "BIM Assistant: Execute Shortcut");
-        tx.Start();
 
         foreach (var stepNode in toolSequence)
         {
@@ -203,8 +204,6 @@ public class NotifyPatternCommand : CommandBase<string>
                      je.TryGetProperty("elementId", out var eid))
                 lastElementId = eid.GetInt64();
         }
-
-        tx.Commit();
     }
 
     private static object? DispatchStep(string tool, JsonObject args, Document doc, long lastId)
