@@ -54,8 +54,21 @@ public class RoutineDetector
         switch (record.ActionType)
         {
             case "Place":
-                // If there is a stale open episode for this element (e.g. user never tagged
-                // the previous placement), try to finalize it before starting the new one.
+                // When the user places a NEW element they have "moved on" from prior sequences.
+                // Finalize all other open episodes that have accumulated ≥ 2 actions.
+                // This fires detection even when the user never Tags the element
+                // (the common case in practice — Tag is optional in many workflows).
+                foreach (var kvp in _activeEpisodes.ToList())
+                {
+                    if (kvp.Key != elementId && kvp.Value.Count >= 2)
+                    {
+                        App.DiagLog($"RoutineDetector: finalizing ep id={kvp.Key} on new Place (count={kvp.Value.Count})");
+                        FinalizeEpisode(kvp.Key, kvp.Value);
+                        _activeEpisodes.Remove(kvp.Key);
+                    }
+                }
+
+                // Also finalize a stale episode for this same element-id (e.g. placed twice)
                 if (_activeEpisodes.TryGetValue(elementId, out var stale) && stale.Count >= 2)
                     FinalizeEpisode(elementId, stale);
 
@@ -91,6 +104,7 @@ public class RoutineDetector
         if (actions[0].ActionType != "Place") return;
 
         var sig = ComputeSignature(actions);
+        App.DiagLog($"RoutineDetector: FinalizeEpisode sig='{sig}' actions={actions.Count}");
 
         if (!_completedBySignature.TryGetValue(sig, out var episodes))
         {
@@ -100,10 +114,11 @@ public class RoutineDetector
 
         // Store a snapshot of the episode (copy so the list can be safely reused)
         episodes.Add(new CompletedEpisode(elementId, actions.ToList()));
+        App.DiagLog($"RoutineDetector: sig='{sig}' episodeCount={episodes.Count} (need {MinRepetitions})");
 
         if (episodes.Count >= MinRepetitions)
         {
-            App.DiagLog($"RoutineDetector: confirmed sig='{sig}' count={episodes.Count}");
+            App.DiagLog($"RoutineDetected: sig='{sig}' count={episodes.Count} → firing event");
             RoutineDetected?.Invoke(this, new RoutineDetectedEventArgs(
                 id:            BuildRoutineId(sig),
                 label:         BuildLabel(actions),
