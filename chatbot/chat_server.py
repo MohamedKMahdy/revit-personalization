@@ -267,11 +267,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 @keyframes bounce{0%,80%,100%{transform:scale(.65);opacity:.5}40%{transform:scale(1);opacity:1}}
 
 /* ── Status bar ── */
-.status{padding:9px 18px;font-size:12px;text-align:center;
+.status{padding:11px 18px;font-size:13px;font-weight:500;text-align:center;
         border-top:1px solid #e5e5e5;flex-shrink:0;display:none}
 .status.info   {background:#d1ecf1;color:#0c5460;display:block}
 .status.success{background:#d4edda;color:#155724;display:block}
 .status.error  {background:#f8d7da;color:#721c24;display:block}
+
+/* Spin animation for the ⟳ character */
+@keyframes spin{from{display:inline-block;transform:rotate(0deg)}to{transform:rotate(360deg)}}
 
 /* ── Input area ── */
 .input-row{display:flex;gap:8px;padding:12px 16px;background:#fff;
@@ -423,20 +426,27 @@ async function streamFrom(url, body){
 /* ── Actions ────────────────────────────────────────────────────── */
 async function runExec(){
   freezeActions();
-  setStatus('Executing in Revit…', 'info');
+
+  // Immediately show spinner on the button itself
+  const btn = document.getElementById('btn-exec');
+  btn.textContent = '⟳ Running…';
+
+  setStatus('⟳ Executing in Revit — please wait…', 'info');
+
   try{
     const r   = await fetch('/api/execute',{method:'POST'});
     const res = await r.json();
-    if(res.success || res.steps_executed > 0){
+    if(res.success || (res.steps_executed != null && res.steps_executed > 0)){
       setStatus(`✓ Done — ${res.steps_executed} step(s) executed in Revit`, 'success');
-      addBubble('bot',`Done! I ran ${res.steps_executed} step(s) in your Revit model. The shortcut has been applied.`);
+      addBubble('bot', `Done! I applied ${res.steps_executed} step(s) to your Revit model.`);
     } else {
-      const err = res.error || 'Unknown error';
+      const err = res.error || JSON.stringify(res);
       setStatus(`✗ ${err}`, 'error');
-      addBubble('bot',`Something went wrong: ${err}\n\nMake sure Revit is open and the project is active.`);
+      addBubble('bot', `Something went wrong: ${err}\n\nMake sure Revit is open with a project loaded.`);
     }
   } catch(e){
     setStatus(`✗ Network error: ${e.message}`, 'error');
+    addBubble('bot', `Could not reach Revit: ${e.message}`);
   }
 }
 
@@ -447,8 +457,7 @@ function runDismiss(){
 
 function clickExec(){
   if(_done || _busy) return;
-  addBubble('usr','Execute');
-  streamFrom('/api/chat',{text:'Execute'});
+  runExec();
 }
 
 function clickDismiss(){
