@@ -493,9 +493,12 @@ async function streamFrom(url, body){
 
 /* ── Actions ────────────────────────────────────────────────────── */
 async function runExec(){
+  // Always re-enable chat input first — streamFrom()/lockUI() may have disabled it
   _busy      = false;
   _executing = true;
-  freezeActions();
+  inp().disabled = false;
+  document.getElementById('btn-send').disabled = false;
+  freezeActions();  // only disables Execute/Dismiss buttons
 
   const btn = document.getElementById('btn-exec');
   btn.textContent = '⟳ Running…';
