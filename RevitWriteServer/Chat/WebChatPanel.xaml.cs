@@ -90,17 +90,21 @@ public partial class WebChatPanel : UserControl
         {
             try
             {
-                // If still initialising, wait (Loaded hasn't fired yet when the
-                // pane is shown for the first time)
                 if (!_ready.Task.IsCompleted)
                     SetSplash("Starting BIM Assistant…");
 
-                await _ready.Task;          // faults if WebView2 failed
-                WebView.CoreWebView2.Navigate(url);
+                await _ready.Task;
+
+                // If already on this URL, force a reload so the browser
+                // picks up any server-side changes (bypasses cache).
+                var current = WebView.Source?.ToString() ?? "";
+                if (current.TrimEnd('/') == url.TrimEnd('/'))
+                    WebView.CoreWebView2.Reload();
+                else
+                    WebView.CoreWebView2.Navigate(url);
             }
             catch
             {
-                // WebView2 unavailable — show URL hint so user can open manually
                 SetSplash("Open in your browser:");
                 UrlHint.Text       = url;
                 UrlHint.Visibility = Visibility.Visible;

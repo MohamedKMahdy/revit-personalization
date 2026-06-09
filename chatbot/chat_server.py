@@ -529,7 +529,10 @@ init();
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_ui():
-    return _HTML
+    return HTMLResponse(
+        content=_HTML,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
