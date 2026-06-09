@@ -379,6 +379,15 @@ function freezeActions(){
   inp().disabled = true;
   document.getElementById('btn-send').disabled = true;
 }
+function unfreezeActions(){
+  _done = false;
+  _busy = false;
+  document.getElementById('btn-exec').disabled = false;
+  document.getElementById('btn-exec').textContent = '▶ Execute';
+  document.getElementById('btn-dis').disabled  = false;
+  inp().disabled = false;
+  document.getElementById('btn-send').disabled = false;
+}
 
 /* ── SSE streaming ──────────────────────────────────────────────── */
 async function streamFrom(url, body){
@@ -425,28 +434,30 @@ async function streamFrom(url, body){
 
 /* ── Actions ────────────────────────────────────────────────────── */
 async function runExec(){
+  // Cancel any in-flight Claude stream and freeze UI
+  _busy = false;
   freezeActions();
 
-  // Immediately show spinner on the button itself
   const btn = document.getElementById('btn-exec');
   btn.textContent = '⟳ Running…';
-
   setStatus('⟳ Executing in Revit — please wait…', 'info');
 
   try{
-    const r   = await fetch('/api/execute',{method:'POST'});
+    const r   = await fetch('/api/execute', {method:'POST'});
     const res = await r.json();
     if(res.success || (res.steps_executed != null && res.steps_executed > 0)){
       setStatus(`✓ Done — ${res.steps_executed} step(s) executed in Revit`, 'success');
-      addBubble('bot', `Done! I applied ${res.steps_executed} step(s) to your Revit model.`);
+      addBubble('bot', `Done! Applied ${res.steps_executed} step(s) to your Revit model.`);
     } else {
       const err = res.error || JSON.stringify(res);
       setStatus(`✗ ${err}`, 'error');
-      addBubble('bot', `Something went wrong: ${err}\n\nMake sure Revit is open with a project loaded.`);
+      addBubble('bot', `Something went wrong: ${err}`);
+      unfreezeActions();   // ← let user retry
     }
   } catch(e){
     setStatus(`✗ Network error: ${e.message}`, 'error');
-    addBubble('bot', `Could not reach Revit: ${e.message}`);
+    addBubble('bot', `Could not reach the server: ${e.message}`);
+    unfreezeActions();     // ← let user retry
   }
 }
 
@@ -456,7 +467,7 @@ function runDismiss(){
 }
 
 function clickExec(){
-  if(_done || _busy) return;
+  if(_done) return;
   runExec();
 }
 
