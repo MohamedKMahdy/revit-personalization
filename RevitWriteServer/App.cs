@@ -67,14 +67,6 @@ public class App : IExternalApplication
         {
             var app = new UIApplication(sender as Autodesk.Revit.ApplicationServices.Application);
 
-            // Store the DockablePane handle so NotifyPatternCommand and the ribbon
-            // button can call Show() without holding a UIApplication reference.
-            try
-            {
-                WebChatPaneProvider.Pane = app.GetDockablePane(WebChatPaneProvider.PanelId);
-            }
-            catch { /* not critical — pane will still work, just can't auto-show */ }
-
             StartServer(app);
         }
         catch (Exception ex)

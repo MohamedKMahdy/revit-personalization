@@ -56,7 +56,12 @@ public class NotifyPatternCommand : CommandBase<string>
     protected override void ExecuteOnRevitThread(Document doc)
     {
         // Show and focus the dockable pane (must be on Revit API thread)
-        try { WebChatPaneProvider.Pane?.Show(); } catch { /* pane might not be ready */ }
+        // UiApp is always valid here (inherited from CommandBase)
+        try
+        {
+            UiApp.GetDockablePane(WebChatPaneProvider.PanelId).Show();
+        }
+        catch { /* best-effort */ }
 
         // Start server + POST pattern + navigate WebView2 (background thread)
         var json = _payloadJson;

@@ -24,10 +24,19 @@ public class OpenBIMAssistantCommand : IExternalCommand
         ref string          message,
         ElementSet          elements)
     {
-        // Show the pane on the Revit API thread
-        try { WebChatPaneProvider.Pane?.Show(); } catch { }
+        // commandData.Application is always valid here — no stored reference needed
+        try
+        {
+            commandData.Application
+                .GetDockablePane(WebChatPaneProvider.PanelId)
+                .Show();
+        }
+        catch (Exception ex)
+        {
+            message = $"Could not show BIM Assistant pane: {ex.Message}";
+        }
 
-        // Start server + navigate on a background thread
+        // Start server + navigate WebView2 on a background thread
         _ = Task.Run(() => ChatbotLauncher.OpenAsync());
 
         return Result.Succeeded;
