@@ -21,7 +21,25 @@ public class App : IExternalApplication
     {
         try
         {
-            // Defer TCP server to ApplicationInitialized (we need UIApplication)
+            // ── Ribbon tab: "BIM Assistant" ───────────────────────────────────
+            // Adds an "Open BIM Assistant" button so the user can open the
+            // browser chat at any time, not just when a pattern fires.
+            try { application.CreateRibbonTab("BIM Assistant"); } catch { /* already exists */ }
+
+            var panel   = application.CreateRibbonPanel("BIM Assistant", "Pattern Shortcuts");
+            var btnData = new PushButtonData(
+                "OpenBIMAssistant",
+                "Open BIM\nAssistant",
+                typeof(App).Assembly.Location,
+                typeof(OpenBIMAssistantCommand).FullName!);
+            btnData.ToolTip = "Open the BIM Assistant chat in your browser (localhost:5000).\n" +
+                              "The Python chatbot server starts automatically if not running.";
+            btnData.LongDescription =
+                "Detected a repeated modeling routine? Click here to review it " +
+                "and optionally execute it as a one-click shortcut.";
+            panel.AddItem(btnData);
+
+            // ── Defer TCP server to ApplicationInitialized ────────────────────
             application.ControlledApplication.ApplicationInitialized += OnApplicationInitialized;
             return Result.Succeeded;
         }
@@ -75,7 +93,7 @@ public class App : IExternalApplication
         _server.Start();
 
         uiApp.Application.WriteJournalComment(
-            "RevitWriteServer: TCP server started on localhost:8080 | BIM Assistant panel registered",
+            "RevitWriteServer: TCP server started on localhost:8080 | BIM Assistant browser UI on localhost:5000",
             true);
     }
 
