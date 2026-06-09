@@ -1,5 +1,4 @@
 using Autodesk.Revit.UI;
-using RevitWriteServer.Chat;
 using RevitWriteServer.Commands;
 
 namespace RevitWriteServer;
@@ -8,28 +7,20 @@ namespace RevitWriteServer;
 /// IExternalApplication entry point.
 ///
 /// On startup:
-///  1. Registers the BIM Assistant dockable pane (chat panel).
-///  2. Defers TCP server start to ApplicationInitialized (when UIApplication is available).
+///  1. Defers TCP server start to ApplicationInitialized (when UIApplication is available).
 ///
 /// The TCP server accepts JSON-RPC 2.0 commands from the Python orchestrator.
-/// The dockable chat panel streams Claude responses directly inside Revit.
+/// When a pattern is detected, NotifyPatternCommand starts the Python chatbot
+/// server (chatbot/chat_server.py) and opens the browser at http://localhost:5000.
 /// </summary>
 public class App : IExternalApplication
 {
-    private TcpCommandServer?  _server;
-    private ChatPaneProvider?  _paneProvider;
+    private TcpCommandServer? _server;
 
     public Result OnStartup(UIControlledApplication application)
     {
         try
         {
-            // Register the dockable pane (must happen in OnStartup)
-            _paneProvider = new ChatPaneProvider();
-            application.RegisterDockablePane(
-                ChatPaneProvider.PanelId,
-                "BIM Assistant",
-                _paneProvider);
-
             // Defer TCP server to ApplicationInitialized (we need UIApplication)
             application.ControlledApplication.ApplicationInitialized += OnApplicationInitialized;
             return Result.Succeeded;
@@ -68,12 +59,7 @@ public class App : IExternalApplication
         var tagElement      = new TagElementCommand(uiApp);
         var notifyPattern   = new NotifyPatternCommand(uiApp);
 
-        // Wire up static refs so NotifyPatternCommand can dispatch directly
-        NotifyPatternCommand.PaneProvider    = _paneProvider;
-        NotifyPatternCommand.PlaceCmd        = placeElement;
-        NotifyPatternCommand.SetParamCmd     = setParameter;
-        NotifyPatternCommand.TagCmd          = tagElement;
-        NotifyPatternCommand.FamilyTypesCmd  = getFamilyTypes;
+        // No static refs needed — execution goes Python → TCP → CommandBase path
 
         // Register all commands with the TCP server
         _server = new TcpCommandServer();
