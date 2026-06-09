@@ -55,7 +55,10 @@ public class NotifyPatternCommand : CommandBase<string>
 
     protected override void ExecuteOnRevitThread(Document doc)
     {
-        // Fire-and-forget: network I/O must not block the Revit API thread.
+        // Show and focus the dockable pane (must be on Revit API thread)
+        try { WebChatPaneProvider.Pane?.Show(); } catch { /* pane might not be ready */ }
+
+        // Start server + POST pattern + navigate WebView2 (background thread)
         var json = _payloadJson;
         _ = Task.Run(() => ChatbotLauncher.OpenAsync(json));
         _notifyResult = "ok";

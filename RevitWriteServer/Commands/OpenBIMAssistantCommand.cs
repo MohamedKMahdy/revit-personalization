@@ -6,14 +6,15 @@ using RevitWriteServer.Chat;
 namespace RevitWriteServer.Commands;
 
 /// <summary>
-/// Ribbon button command — opens the BIM Assistant browser UI.
+/// Ribbon button command — shows the BIM Assistant dockable pane and ensures
+/// the Python chatbot server (localhost:5000) is running.
 ///
-/// If the Python chatbot server (localhost:5000) is not already running,
-/// it is started automatically from chatbot/chat_server.py before the
-/// browser is opened.
+/// Clicking the button:
+///   1. Shows / focuses the WebView2 dockable pane inside Revit.
+///   2. Starts chatbot/chat_server.py if not already running.
+///   3. Navigates the pane to http://localhost:5000.
 ///
-/// Added to the "BIM Assistant" ribbon tab by App.OnStartup.
-/// No Revit transaction needed — just process + browser management.
+/// Falls back to opening the system browser if WebView2 is unavailable.
 /// </summary>
 [Transaction(TransactionMode.Manual)]
 public class OpenBIMAssistantCommand : IExternalCommand
@@ -23,8 +24,12 @@ public class OpenBIMAssistantCommand : IExternalCommand
         ref string          message,
         ElementSet          elements)
     {
-        // Fire-and-forget: network I/O must not block the Revit UI thread
+        // Show the pane on the Revit API thread
+        try { WebChatPaneProvider.Pane?.Show(); } catch { }
+
+        // Start server + navigate on a background thread
         _ = Task.Run(() => ChatbotLauncher.OpenAsync());
+
         return Result.Succeeded;
     }
 }

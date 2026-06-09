@@ -22,18 +22,18 @@
     </Reference>
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3967.48" />
+  </ItemGroup>
+
   <!-- Auto-deploy to Revit 2027 Addins on Debug build -->
   <Target Name="DeployAddin" AfterTargets="Build" Condition="'$(Configuration)'=='Debug'">
     <PropertyGroup>
       <AddinsDir>$(APPDATA)\Autodesk\Revit\Addins\2027</AddinsDir>
     </PropertyGroup>
     <MakeDir Directories="$(AddinsDir)" />
-    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
-          DestinationFolder="$(AddinsDir)"
-          SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(ProjectDir)revit-write-server.addin"
-          DestinationFolder="$(AddinsDir)"
-          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(AddinsDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(ProjectDir)revit-write-server.addin" DestinationFolder="$(AddinsDir)" SkipUnchangedFiles="true" />
     <Message Text="Deployed $(AssemblyName) to $(AddinsDir)" Importance="high" />
   </Target>
 

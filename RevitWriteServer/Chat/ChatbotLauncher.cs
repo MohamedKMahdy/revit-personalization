@@ -6,11 +6,12 @@ using System.Text;
 namespace RevitWriteServer.Chat;
 
 /// <summary>
-/// Shared helper that starts the Python chatbot server and opens the browser.
+/// Shared helper that starts the Python chatbot server and navigates the
+/// embedded WebView2 dockable pane (or opens an external browser as fallback).
 ///
 /// Used by:
 ///   - NotifyPatternCommand   — when a pattern is detected (POSTs pattern data first)
-///   - OpenBIMAssistantCommand — when the user clicks the ribbon button (just opens browser)
+///   - OpenBIMAssistantCommand — when the user clicks the ribbon button
 /// </summary>
 public static class ChatbotLauncher
 {
@@ -22,16 +23,18 @@ public static class ChatbotLauncher
 
     /// <summary>
     /// Ensures the chatbot server is running, optionally POSTs a pattern payload,
-    /// then opens the default browser at ChatbotUrl.
+    /// then navigates the embedded WebView2 pane.
+    /// Falls back to the system browser if WebView2 is unavailable.
+    /// Safe to call from a background thread.
     /// </summary>
     public static async Task OpenAsync(string? patternJson = null)
     {
+        // ── 1. Start server if needed ─────────────────────────────────────────
         bool serverUp = await IsServerUpAsync();
 
         if (!serverUp)
         {
             StartServer();
-            // Poll up to 8 s
             for (int i = 0; i < 16 && !serverUp; i++)
             {
                 await Task.Delay(500);
@@ -39,8 +42,8 @@ public static class ChatbotLauncher
             }
         }
 
-        // POST the pattern if provided (can retry now that server is up)
-        if (patternJson is not null)
+        // ── 2. POST the pattern (if provided) ─────────────────────────────────
+        if (patternJson is not null && serverUp)
         {
             try
             {
@@ -50,16 +53,25 @@ public static class ChatbotLauncher
             catch { /* best-effort */ }
         }
 
-        // Open browser (even if server was slow — user can refresh)
-        try
+        // ── 3. Navigate the embedded pane (or open external browser) ──────────
+        var panel = WebChatPaneProvider.Panel;
+        if (panel is not null)
         {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName        = ChatbotUrl,
-                UseShellExecute = true,
-            });
+            panel.NavigateTo(ChatbotUrl);
         }
-        catch { }
+        else
+        {
+            // WebView2 pane not available — fall back to system browser
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName        = ChatbotUrl,
+                    UseShellExecute = true,
+                });
+            }
+            catch { }
+        }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
