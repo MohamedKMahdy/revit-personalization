@@ -13,6 +13,11 @@ public record PatternData
     public int Count { get; init; }
     public JsonNode? Motif { get; init; }
     public JsonArray? ToolSequence { get; init; }
-    /// <summary>Called when the user confirms. Always invoked on the Revit UI thread.</summary>
-    public Action? ExecuteCallback { get; init; }
+    /// <summary>
+    /// Called when the user confirms.
+    /// Returns a Task that completes (or faults) when the Revit ExternalEvent finishes.
+    /// Awaiting it from the WPF dispatcher yields the message loop so Revit can
+    /// dispatch the event — do NOT block-wait (.Result / .Wait()) on the UI thread.
+    /// </summary>
+    public Func<Task>? ExecuteCallback { get; init; }
 }

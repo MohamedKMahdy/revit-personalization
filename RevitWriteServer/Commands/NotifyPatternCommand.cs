@@ -36,7 +36,30 @@ public class NotifyPatternCommand : CommandBase<string>
     private JsonNode? _motif;
     private JsonArray? _toolSequence;
 
-    public NotifyPatternCommand(UIApplication uiApp) : base(uiApp) { }
+    // ── Dedicated ExternalEvent for shortcut execution ────────────────────────
+    //
+    // ExecuteCallback must NOT start a Transaction directly from the WPF handler:
+    // being on the WPF UI thread is NOT the same as being in the Revit API context.
+    // Transactions require an ExternalEvent or IExternalCommand frame.
+    //
+    // Flow:
+    //   1. User clicks Execute (WPF thread)
+    //   2. ExecuteCallback raises _execEvent (non-blocking) and returns a Task
+    //   3. await in DoExecute() yields the message loop
+    //   4. Revit dispatches _execEvent on the API thread → Transaction succeeds
+    //   5. TaskCompletionSource signals → DoExecute continues → shows result
+    private static ExecuteShortcutHandler? _execHandler;
+    private static ExternalEvent?          _execEvent;
+
+    public NotifyPatternCommand(UIApplication uiApp) : base(uiApp)
+    {
+        // Create the ExternalEvent once (constructor runs on the API thread)
+        if (_execEvent is null)
+        {
+            _execHandler = new ExecuteShortcutHandler();
+            _execEvent   = ExternalEvent.Create(_execHandler);
+        }
+    }
 
     protected override void PrepareParameters(JsonNode? parameters)
     {
@@ -63,11 +86,25 @@ public class NotifyPatternCommand : CommandBase<string>
 
         var data = new PatternData
         {
-            Label         = _label,
-            Count         = _count,
-            Motif         = _motif,
-            ToolSequence  = capturedSeq,
-            ExecuteCallback = () => ExecuteToolSequence(capturedDoc, capturedSeq),
+            Label        = _label,
+            Count        = _count,
+            Motif        = _motif,
+            ToolSequence = capturedSeq,
+
+            // Async callback: arms the ExternalEvent handler with the tool sequence,
+            // raises the event (non-blocking), and returns a Task that completes when
+            // the handler finishes.  DoExecute() awaits this, which yields the WPF
+            // message loop so Revit can dispatch the event in the proper API context.
+            ExecuteCallback = () =>
+            {
+                var tcs = new TaskCompletionSource<bool>();
+                _execHandler!.Arm(capturedDoc, capturedSeq, tcs);
+                var status = _execEvent!.Raise();
+                if (status != ExternalEventRequest.Accepted)
+                    return Task.FromException(
+                        new InvalidOperationException($"ExternalEvent not accepted: {status}"));
+                return tcs.Task;
+            },
         };
 
         // Bring the panel to focus and load the pattern
@@ -82,7 +119,52 @@ public class NotifyPatternCommand : CommandBase<string>
     protected override object GetResult() => new { status = _notifyResult ?? "ok" };
     private string? _notifyResult;
 
-    // ── Direct shortcut execution (called from the WPF UI thread) ────────────
+    // ── ExternalEvent handler for shortcut execution ──────────────────────────
+
+    /// <summary>
+    /// Runs ExecuteToolSequence inside the Revit API context (ExternalEvent frame).
+    /// Signals the TaskCompletionSource when done so the awaiting WPF handler can
+    /// update the UI with success or failure.
+    /// </summary>
+    private sealed class ExecuteShortcutHandler : IExternalEventHandler
+    {
+        private Document? _doc;
+        private JsonArray? _seq;
+        private TaskCompletionSource<bool>? _tcs;
+
+        public void Arm(Document doc, JsonArray? seq, TaskCompletionSource<bool> tcs)
+        {
+            _doc = doc;
+            _seq = seq;
+            _tcs = tcs;
+        }
+
+        void IExternalEventHandler.Execute(UIApplication app)
+        {
+            var doc = _doc;
+            var seq = _seq;
+            var tcs = _tcs;
+            _doc = null;
+            _seq = null;
+            _tcs = null;
+
+            if (doc is null || tcs is null) return;
+
+            try
+            {
+                ExecuteToolSequence(doc, seq);
+                tcs.SetResult(true);
+            }
+            catch (Exception ex)
+            {
+                tcs.SetException(ex);
+            }
+        }
+
+        string IExternalEventHandler.GetName() => "BIM Assistant: Execute Shortcut";
+    }
+
+    // ── Tool sequence execution (always called inside ExternalEvent context) ──
 
     private static void ExecuteToolSequence(Document doc, JsonArray? toolSequence)
     {

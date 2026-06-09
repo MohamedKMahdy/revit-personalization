@@ -26,8 +26,8 @@ public partial class ChatPanel : UserControl
     private bool _busy;
     private bool _done;
 
-    // Set by NotifyPatternCommand — runs the shortcut on the Revit UI thread
-    private Action? _executeCallback;
+    // Set by NotifyPatternCommand — async: raises ExternalEvent and awaits API-context completion
+    private Func<Task>? _executeCallback;
 
     // ── Construction ──────────────────────────────────────────────────────────
 
@@ -244,7 +244,8 @@ public partial class ChatPanel : UserControl
 
     // ── Actions ───────────────────────────────────────────────────────────────
 
-    private void DoExecute()
+    // async void is correct here — WPF event handler, exceptions shown in UI not propagated
+    private async void DoExecute()
     {
         _done = true;
         BtnExecute.IsEnabled = false;
@@ -256,7 +257,13 @@ public partial class ChatPanel : UserControl
 
         try
         {
-            _executeCallback?.Invoke();
+            if (_executeCallback is not null)
+            {
+                // await yields the WPF message loop so Revit can dispatch the
+                // ExternalEvent. The continuation resumes on the WPF dispatcher
+                // via the captured SynchronizationContext.
+                await _executeCallback.Invoke();
+            }
             ShowStatus("✓ Done — shortcut executed.", "#D4EDDA", "#155724");
             AddBotMessage("Done! The shortcut has been applied to your Revit model.");
         }
@@ -333,10 +340,10 @@ public partial class ChatPanel : UserControl
             Count        = 5,
             Motif        = motifJson,
             ToolSequence = seqJson,
-            // No real ExecuteCallback in test mode — show a message instead
-            ExecuteCallback = () => throw new InvalidOperationException(
+            // No real ExecuteCallback in test mode — return a faulted task
+            ExecuteCallback = () => Task.FromException(new InvalidOperationException(
                 "This is a test pattern — open a Revit project first, " +
-                "then trigger a real pattern via RevitLogger."),
+                "then trigger a real pattern via RevitLogger.")),
         };
         LoadPattern(data);
     }
