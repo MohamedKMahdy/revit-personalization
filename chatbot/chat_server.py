@@ -52,6 +52,7 @@ _client = anthropic.AsyncAnthropic()
 _pattern: dict          = {}
 _history: list[dict]    = []   # Anthropic messages (alternating user/assistant)
 _last_element_id: int | None = None   # element placed by last execution
+_pending_location: dict = {}          # {x, y, z} parsed from user/Claude conversation
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # System prompt
@@ -71,7 +72,15 @@ parameters if needed, then execute or dismiss based on their decision.
 
 ━━━ RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - Keep every response SHORT (2–4 sentences). This is a quick decision, not a lecture.
-- When the user confirms (yes / go / execute / do it / confirm / sure), output exactly:
+- BEFORE outputting ##EXECUTE##, you MUST know WHERE to place the element.
+  Ask the user for a location if they haven't given one, e.g.:
+    "Where would you like to place it? Give me coordinates (X, Y in metres) or say 'at the origin'."
+  Once the user gives a location, output a hidden token on its own line:
+    ##LOCATION:x,y,z##
+  (replace x/y/z with the numeric values, e.g. ##LOCATION:10.5,3.0,0## )
+  Then confirm and output ##EXECUTE## on the next line.
+  If the user says "at the origin" or similar, use ##LOCATION:0,0,0##.
+- When the user confirms AND a location is known (yes / go / execute / do it / confirm / sure), output exactly:
     ##EXECUTE##
   as its own line, then a brief "Running now..." message.
 - When the user declines (no / dismiss / cancel / not now / skip), output exactly:
@@ -150,6 +159,17 @@ async def _stream(messages: list[dict], append_to_history: bool = True) -> Async
     if append_to_history:
         _history.append({"role": "assistant", "content": full})
 
+    # Parse optional location token: ##LOCATION:x,y,z##
+    import re as _re
+    loc_match = _re.search(r"##LOCATION:([-\d.]+),([-\d.]+),([-\d.]+)##", full)
+    if loc_match:
+        global _pending_location
+        _pending_location = {
+            "x": float(loc_match.group(1)),
+            "y": float(loc_match.group(2)),
+            "z": float(loc_match.group(3)),
+        }
+
     # Signal completion + any action token
     action = None
     if   "##EXECUTE##"  in full: action = "execute"
@@ -179,9 +199,11 @@ class MessageIn(BaseModel):
 @app.post("/api/pattern")
 async def api_set_pattern(payload: PatternIn):
     """Load a new detected pattern (resets conversation)."""
-    global _pattern, _history
-    _pattern = payload.model_dump()
-    _history  = []
+    global _pattern, _history, _pending_location, _last_element_id
+    _pattern          = payload.model_dump()
+    _history          = []
+    _pending_location = {}
+    _last_element_id  = None
     return {"ok": True}
 
 
@@ -217,13 +239,30 @@ async def api_chat(msg: MessageIn):
     )
 
 
+class ExecuteIn(BaseModel):
+    x: float | None = None
+    y: float | None = None
+    z: float | None = None
+
 @app.post("/api/execute")
-async def api_execute():
-    """Run the shortcut in Revit."""
+async def api_execute(body: ExecuteIn = ExecuteIn()):
+    """Run the shortcut in Revit, optionally overriding the placement location."""
     global _last_element_id
     seq = _pattern.get("tool_sequence", [])
     if not seq:
         return {"error": "No tool sequence loaded", "success": False}
+    # Merge caller-provided coords with any location extracted from conversation
+    merged = {**_pending_location}
+    if body.x is not None: merged["x"] = body.x
+    if body.y is not None: merged["y"] = body.y
+    if body.z is not None: merged["z"] = body.z
+    if merged:
+        import copy
+        seq = copy.deepcopy(seq)
+        for step in seq:
+            if step.get("tool") == "place_element":
+                loc = step.setdefault("arguments", {}).setdefault("location", {})
+                loc.update(merged)
     result = execute_shortcut("<chatbot>", tool_sequence=seq)
     # Track the last placed element ID for follow-up actions
     for step in result.get("results", []):
@@ -475,7 +514,7 @@ async function streamFrom(url, body){
       if(ev.t !== undefined){
         full += ev.t;
         // Strip control tokens from display
-        const disp = full.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##/g,'').trim();
+        const disp = full.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##LOCATION:[^#]*##/g,'').trim();
         bubble.innerHTML = esc(disp);
         chat().scrollTop = 99999;
       }
@@ -509,7 +548,10 @@ async function runExec(){
     const res = await r.json();
     if(res.success || (res.steps_executed != null && res.steps_executed > 0)){
       setStatus(`✓ Done — ${res.steps_executed} step(s) executed`, 'success');
-      addBubble('bot', `Done! Applied ${res.steps_executed} step(s) to your model. You can ask follow-up questions, isolate the element, zoom to it, or run it again.`);
+      addBubble('bot', `Done! Applied ${res.steps_executed} step(s) to your model. Zooming to the placed element now…`);
+      // Auto-zoom so user can see where it landed
+      try{ await fetch('/api/zoom', {method:'POST'}); } catch(e){}
+      setStatus(`✓ Done — ${res.steps_executed} step(s) executed · zoomed to element`, 'success');
       // Re-enable everything for follow-up
       unfreezeActions();
       btn.textContent = '▶ Execute Again';
@@ -601,7 +643,7 @@ async function init(){
       let ev; try{ ev=JSON.parse(line.slice(6)); }catch{ continue; }
       if(ev.t !== undefined){
         full += ev.t;
-        bubble.innerHTML = esc(full.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##/g,'').trim());
+        bubble.innerHTML = esc(full.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##LOCATION:[^#]*##/g,'').trim());
         chat().scrollTop = 99999;
       }
       if(ev.done){
