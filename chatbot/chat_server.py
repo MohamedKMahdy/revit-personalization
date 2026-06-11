@@ -546,21 +546,22 @@ async function runExec(){
   try{
     const r   = await fetch('/api/execute', {method:'POST'});
     const res = await r.json();
-    if(res.success || (res.steps_executed != null && res.steps_executed > 0)){
+    if(res.success && res.errors === 0){
       setStatus(`✓ Done — ${res.steps_executed} step(s) executed`, 'success');
       addBubble('bot', `Done! Applied ${res.steps_executed} step(s) to your model. Zooming to the placed element now…`);
-      // Auto-zoom so user can see where it landed
       try{ await fetch('/api/zoom', {method:'POST'}); } catch(e){}
       setStatus(`✓ Done — ${res.steps_executed} step(s) executed · zoomed to element`, 'success');
-      // Re-enable everything for follow-up
       unfreezeActions();
       btn.textContent = '▶ Execute Again';
       inp().placeholder = 'Ask a follow-up question…';
       inp().focus();
     } else {
-      const err = res.error || JSON.stringify(res);
+      // Extract first error from step results for a useful message
+      const stepErrors = (res.results || [])
+        .map(s => s.result?.error).filter(Boolean);
+      const err = stepErrors[0] || res.error || `${res.errors} step(s) failed`;
       setStatus(`✗ ${err}`, 'error');
-      addBubble('bot', `Something went wrong: ${err}`);
+      addBubble('bot', `Revit reported an error: ${err}`);
       unfreezeActions();
     }
   } catch(e){

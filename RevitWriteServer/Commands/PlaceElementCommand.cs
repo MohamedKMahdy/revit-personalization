@@ -67,6 +67,27 @@ public class PlaceElementCommand : CommandBase<PlaceElementResult>
 
         var point = new XYZ(_x, _y, _z);
 
+        // Determine if the family requires a host (doors, windows, etc.)
+        bool needsHost = symbol.Family.FamilyPlacementType is
+            FamilyPlacementType.OneLevelBasedHosted or
+            FamilyPlacementType.TwoLevelsBased;
+
+        // Find nearest wall in the active view (for hosted families)
+        Wall? nearestWall = null;
+        if (needsHost)
+        {
+            nearestWall = new FilteredElementCollector(doc)
+                .OfClass(typeof(Wall))
+                .Cast<Wall>()
+                .Where(w => w.Location is LocationCurve)
+                .OrderBy(w => ((LocationCurve)w.Location).Curve.Distance(point))
+                .FirstOrDefault();
+
+            if (nearestWall == null)
+                throw new InvalidOperationException(
+                    $"Family '{symbol.FamilyName}' requires a host wall, but no walls were found in the model.");
+        }
+
         using var tx = new Transaction(doc, "RevitWriteServer: PlaceElement");
         tx.Start();
 
@@ -77,11 +98,22 @@ public class PlaceElementCommand : CommandBase<PlaceElementResult>
             doc.Regenerate();
         }
 
-        FamilyInstance? instance;
-        if (level != null)
+        FamilyInstance instance;
+        if (nearestWall != null)
+        {
+            // Hosted placement — snap point to the wall's curve for clean insertion
+            var wallCurve = ((LocationCurve)nearestWall.Location).Curve;
+            var snapped   = wallCurve.Project(point).XYZPoint;
+            instance = doc.Create.NewFamilyInstance(snapped, symbol, nearestWall, StructuralType.NonStructural);
+        }
+        else if (level != null)
+        {
             instance = doc.Create.NewFamilyInstance(point, symbol, level, StructuralType.NonStructural);
+        }
         else
+        {
             instance = doc.Create.NewFamilyInstance(point, symbol, StructuralType.NonStructural);
+        }
 
         tx.Commit();
 
