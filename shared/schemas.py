@@ -93,12 +93,28 @@ class RoutineExample(BaseModel):
 
 
 class CandidateRoutine(BaseModel):
-    """A detected candidate routine with all its recorded examples."""
+    """
+    A detected candidate routine with all its recorded examples.
+
+    Two independent ranking axes are carried on every candidate:
+      • support    — cluster size / how many example instances were grouped
+                     (the FREQUENCY signal). `count` is a backward-compatible
+                     alias holding the same value.
+      • confidence — quality of the grouping. NOTE the meaning differs by detector:
+                       v0.1 (SubstringDetector): frequency-based  min(1, count/5)
+                       v0.2 (ClusterDetector):   mean pairwise intra-cluster
+                                                 similarity (TIGHTNESS), 0–1.
+                     Because these are different axes, do not compare a v0.1
+                     confidence against a v0.2 confidence as if equivalent — the
+                     v0.1-vs-v0.2 evaluation compares detection precision/recall
+                     against the labeled session, not the confidence value.
+    """
     id:               str
     label:            str            # e.g. "Place(M_Single-Flush) → SetParam×4 → Tag"
     action_signature: str            # compact e.g. "P,S,S,S,S,T"
-    count:            int
-    confidence:       float = 0.0   # 0–1: consistency across examples
+    count:            int            # cluster size (frequency) — alias of `support`
+    support:          int = 0        # cluster size (frequency signal); set == count
+    confidence:       float = 0.0    # tightness (v0.2) or frequency (v0.1) — see class doc
     examples:         list[RoutineExample] = []
 
 
