@@ -53,6 +53,12 @@ import socket
 import time
 from pathlib import Path
 
+from shared.tool_allowlist import (
+    DisallowedToolError,
+    assert_tool_allowed,
+    validate_tool_sequence,
+)
+
 # ── Connection settings ────────────────────────────────────────────────────────
 REVIT_PLUGIN_HOST = os.environ.get("REVIT_PLUGIN_HOST", "localhost")
 REVIT_PLUGIN_PORT = int(os.environ.get("REVIT_PLUGIN_PORT", "8080"))
@@ -417,6 +423,12 @@ def execute_shortcut(
     if params:
         tool_sequence = _apply_param_overrides(tool_sequence, params)
 
+    # ENFORCED execution-safety boundary (defense-in-depth): validate the WHOLE
+    # sequence before executing any step, so a tampered shortcut file or any
+    # non-allowlisted tool (e.g. send_code_to_revit) is rejected up front with no
+    # partial execution. Raises DisallowedToolError.
+    validate_tool_sequence(tool_sequence)
+
     results: list[dict] = []
     last_element_id: int | None = None
 
@@ -464,13 +476,19 @@ def execute_tool_sequence(
 
 def _dispatch_tool(tool: str, arguments: dict) -> dict:
     """
-    Map motif tool names to RevitWriteServer TCP commands.
+    Map permitted motif tool names to RevitWriteServer TCP commands.
+
+    ENFORCED execution-safety backstop: deny-by-default. Only the allowlisted
+    pipeline tools are dispatchable; there is NO passthrough of arbitrary tool
+    names to the plugin, so send_code_to_revit can never be reached this way.
 
     RevitWriteServer command signatures (our custom C# plugin on port 8080):
       create_point_based_element  — typeId (int), x, y, z (double), levelId (int, opt)
       set_element_parameter       — elementId (int), parameterName (str), value (any)
       create_element_tag          — elementId (int), tagTypeId (int, opt)
     """
+    assert_tool_allowed(tool)  # raises DisallowedToolError for anything off-allowlist
+
     if tool == "place_element":
         family_type = arguments.get("family_type", arguments.get("family_name", ""))
         loc = arguments.get("location", {})
@@ -512,8 +530,11 @@ def _dispatch_tool(tool: str, arguments: dict) -> dict:
 
         return _call_plugin("create_element_tag", params)
 
-    else:
-        return _call_plugin(tool, arguments)
+    # Unreachable for permitted tools (all are handled above). Kept as a hard
+    # backstop: a permitted-but-unmapped tool fails loudly rather than being
+    # forwarded blindly to the plugin.
+    assert_tool_allowed(tool)
+    raise DisallowedToolError(f"Tool '{tool}' is permitted but has no dispatch mapping.")
 
 
 def _extract_element_id(result: dict) -> int | None:

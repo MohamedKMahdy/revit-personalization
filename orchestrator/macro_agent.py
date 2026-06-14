@@ -25,6 +25,7 @@ import os
 import anthropic
 
 from mcp_server.revit_bridge import model_query_state, model_query
+from shared.tool_allowlist import validate_tool_sequence
 
 MODEL = os.environ.get("MACRO_AGENT_MODEL", "claude-sonnet-4-6")
 
@@ -262,7 +263,12 @@ def generate_tool_sequence(
         if "arguments" not in step:
             step["arguments"] = {}
 
-    # Attach any precondition warnings as metadata (not part of execution)
+    # ENFORCED execution-safety boundary: the Macro Agent may only emit tools in
+    # the permitted allowlist. Anything outside it — including send_code_to_revit
+    # (arbitrary Roslyn C#) — is rejected here in code, regardless of what the LLM
+    # produced. This is a hard guard, not a prompt instruction.
+    validate_tool_sequence(sequence)
+
     return sequence
 
 
