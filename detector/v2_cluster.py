@@ -140,7 +140,15 @@ class ClusterDetector:
         return self.config.w_set * set_sim + self.config.w_seq * seq_sim
 
     def cluster(self, instances: list[Instance]) -> list[list[Instance]]:
-        """Greedy average-linkage grouping at threshold theta."""
+        """
+        Greedy average-linkage grouping at threshold theta.
+
+        Deterministic tie-breaks: instances are consumed in segment() order
+        (sorted by start_time then element_id); among clusters that tie on
+        average similarity, the strict `>` keeps the earliest-created cluster
+        (clusters are appended in creation order). So two runs on identical
+        input always produce identical clusters in identical order.
+        """
         clusters: list[list[Instance]] = []
         for inst in instances:
             best: list[Instance] | None = None
@@ -154,6 +162,18 @@ class ClusterDetector:
             else:
                 best.append(inst)
         return clusters
+
+    def partition(self, records: list[ActionRecord]) -> dict[int, str]:
+        """
+        Instance-level grouping for clustering-quality scoring: maps each
+        instance's Place element_id → its cluster key (including singletons).
+        """
+        clusters = self.cluster(self.segment(records))
+        out: dict[int, str] = {}
+        for idx, members in enumerate(clusters):
+            for m in members:
+                out[m.element_id] = f"cluster_{idx}"
+        return out
 
     # ── cluster statistics ────────────────────────────────────────────────────
 

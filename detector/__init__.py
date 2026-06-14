@@ -15,12 +15,14 @@ from __future__ import annotations
 
 from .base import Detector, DetectorConfig
 from .v1_substring import SubstringDetector
+from .v1_5_episode import EpisodeGroupingDetector
 from .v2_cluster import ClusterDetector, Instance
 
 DEFAULT_VERSION = "v2"
 
 _ALIASES = {
     "v2": "v2", "cluster": "v2", "v0.2": "v2", "default": "v2",
+    "v1.5": "v1.5", "v15": "v1.5", "episode": "v1.5", "episode-grouping": "v1.5",
     "v1": "v1", "substring": "v1", "baseline": "v1", "v0.1": "v1",
 }
 
@@ -30,6 +32,8 @@ def make_detector(name: str | None = None, config: DetectorConfig | None = None)
     key = _ALIASES.get((name or DEFAULT_VERSION).lower())
     if key == "v2":
         return ClusterDetector(config)
+    if key == "v1.5":
+        return EpisodeGroupingDetector(config)
     if key == "v1":
         return SubstringDetector(config)
     raise ValueError(
@@ -43,6 +47,7 @@ __all__ = [
     "DetectorConfig",
     "ClusterDetector",
     "SubstringDetector",
+    "EpisodeGroupingDetector",
     "Instance",
     "make_detector",
     "DEFAULT_VERSION",

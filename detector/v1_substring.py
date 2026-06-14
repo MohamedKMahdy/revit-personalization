@@ -94,3 +94,31 @@ class SubstringDetector:
                 examples=examples,
             ))
         return routines
+
+    def partition(self, records: list[ActionRecord]) -> dict[int, str]:
+        """
+        Instance-level grouping for clustering-quality scoring: maps each
+        episode's Place element_id → its char-shape group (including singletons).
+        Episodes shorter than min_instance_tokens get a unique singleton key.
+        """
+        recs = sorted(records, key=lambda r: (r.timestamp_unix, r.element_id))
+        episodes: list[tuple[int, list[ActionRecord]]] = []
+        cur: list[ActionRecord] = []
+        cur_eid: int | None = None
+        for r in recs:
+            if r.action_type == "Place":
+                if cur:
+                    episodes.append((cur_eid, cur))
+                cur, cur_eid = [r], r.element_id
+            elif cur:
+                cur.append(r)
+        if cur:
+            episodes.append((cur_eid, cur))
+
+        out: dict[int, str] = {}
+        for eid, ep in episodes:
+            if len(ep) < self.config.min_instance_tokens:
+                out[eid] = f"short_{eid}"
+                continue
+            out[eid] = "shape_" + "".join(action_char(r) for r in ep)
+        return out

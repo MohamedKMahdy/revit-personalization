@@ -145,6 +145,81 @@ def scenario_cooldown_batches() -> tuple[list[ActionRecord], list[ActionRecord]]
     return batch1, batch2
 
 
+# ── Labeled session for the detection evaluation ───────────────────────────────
+
+def _noise(eid: int, t0: float, family: str, category: str, n_params: int) -> list[ActionRecord]:
+    """A single non-routine placement (distractor): Place + n SetParam, no Tag."""
+    recs = [_place(eid, t0, family, category)]
+    for i in range(1, n_params + 1):
+        recs.append(_set(eid, t0 + 2.0 * i, f"P{i}", family, category))
+    return recs
+
+
+def labeled_session() -> tuple[list[ActionRecord], dict[int, str]]:
+    """
+    One labeled synthetic session for scored evaluation.
+
+    Returns (records, labels) where labels maps each instance's *Place
+    element_id* → its ground-truth routine label. Labels are attached out-of-band
+    (not on ActionRecord) so the log schema is untouched.
+
+    Composition (deterministic timestamps, single session — gaps < idle_gap):
+      • "door"   — M_Single-Flush + Door Tag, 6 instances:
+                   4 with 4 params (Mark, Fire Rating, Width, Height) and
+                   2 with 3 params (Mark, Width, Height)  → the 3-vs-4 variant
+                   that must stay ONE routine.
+      • "window" — M_Fixed + Window Tag, 4 instances, params (Mark, Width, Height).
+                   Differs from door by family + tag (must stay separate) even
+                   though its 3-param shape collides with the 3-param doors.
+      • doors and windows are interleaved in time.
+      • two singleton distractors (unique families/shapes) that must NOT surface.
+    """
+    records: list[ActionRecord] = []
+    labels: dict[int, str] = {}
+    t = 0.0
+
+    door_specs = [
+        (1000, ("Mark", "Fire Rating", "Width", "Height")),
+        (1001, ("Mark", "Fire Rating", "Width", "Height")),
+        (1002, ("Mark", "Fire Rating", "Width", "Height")),
+        (1003, ("Mark", "Fire Rating", "Width", "Height")),
+        (1004, ("Mark", "Width", "Height")),  # 3-param variant
+        (1005, ("Mark", "Width", "Height")),  # 3-param variant
+    ]
+    window_specs = [
+        (2000, WINDOW_PARAMS),
+        (2001, WINDOW_PARAMS),
+        (2002, WINDOW_PARAMS),
+        (2003, WINDOW_PARAMS),
+    ]
+
+    # Interleave doors and windows in time.
+    interleaved: list[tuple[str, int, tuple[str, ...]]] = []
+    di, wi = 0, 0
+    while di < len(door_specs) or wi < len(window_specs):
+        if di < len(door_specs):
+            eid, params = door_specs[di]
+            interleaved.append(("door", eid, params)); di += 1
+        if wi < len(window_specs):
+            eid, params = window_specs[wi]
+            interleaved.append(("window", eid, params)); wi += 1
+
+    for kind, eid, params in interleaved:
+        if kind == "door":
+            records += door(eid, t, params=params)
+            labels[eid] = "door"
+        else:
+            records += window(eid, t, params=params)
+            labels[eid] = "window"
+        t += GAP
+
+    # Distractors — unique family + unique shape, below threshold.
+    records += _noise(3000, t, "M_Desk", "Furniture", 2); labels[3000] = "noise_3000"; t += GAP
+    records += _noise(3001, t, "M_Chair", "Furniture", 3); labels[3001] = "noise_3001"; t += GAP
+
+    return records, labels
+
+
 # ── CLI: dump a sample session as JSONL ────────────────────────────────────────
 
 if __name__ == "__main__":
