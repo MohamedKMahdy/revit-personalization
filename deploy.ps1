@@ -1,7 +1,7 @@
 # deploy.ps1 — copy the built DLL into the Revit 2027 add-ins folder
 # Run this AFTER closing Revit (the DLL is locked while Revit is open)
 
-$src  = "$PSScriptRoot\RevitLogger\bin\Release\net10.0-windows\RevitLogger.dll"
+$src  = "$PSScriptRoot\revit_addin\bin\Release\net8.0-windows\RevitLogger.dll"
 $dest = "$env:APPDATA\Autodesk\Revit\Addins\2027\RevitLogger.dll"
 
 if (-not (Test-Path $src)) {

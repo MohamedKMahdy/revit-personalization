@@ -39,10 +39,11 @@ chatbot/server_out.txt
 # Word temp files
 docs/~$*.docx
 
-# C# Revit plugins — moved out of this repo
-# RevitLogger → generalBIMlog repo
-# RevitWriteServer → mcp-servers-for-revit or generalBIMlog
-RevitLogger/
+# C# kept out of this repo
+# RevitWriteServer → execution backend lives in mcp-servers-for-revit
 RevitWriteServer/
 revit-personalization.sln
 results/
+
+# Note: revit_addin/ (the personalization Revit add-in) IS tracked.
+# Its build outputs are covered by the global bin/ and obj/ rules above.

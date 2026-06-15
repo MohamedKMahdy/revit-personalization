@@ -8,7 +8,7 @@
       "type": "shell",
       "command": "dotnet",
       "args": ["build", "-c", "Release"],
-      "options": { "cwd": "${workspaceFolder}/RevitLogger" },
+      "options": { "cwd": "${workspaceFolder}/revit_addin" },
       "group": { "kind": "build", "isDefault": true },
       "presentation": { "reveal": "always", "panel": "shared" },
       "problemMatcher": "$msCompile"
@@ -18,7 +18,7 @@
       "type": "shell",
       "command": "dotnet",
       "args": ["build", "-c", "Debug"],
-      "options": { "cwd": "${workspaceFolder}/RevitLogger" },
+      "options": { "cwd": "${workspaceFolder}/revit_addin" },
       "group": "build",
       "presentation": { "reveal": "always", "panel": "shared" },
       "problemMatcher": "$msCompile"

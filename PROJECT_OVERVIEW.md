@@ -108,14 +108,15 @@ revit-personalization/
 ├── shared/
 │   └── schemas.py               ← ActionRecord, CandidateRoutine, Motif, ShortcutConfig (pydantic)
 │
-├── RevitLogger/                 ← C# add-in (OBSERVER). .NET, Revit 2025–2027
+├── revit_addin/                 ← C# add-in (OBSERVER). .NET 8, Revit 2025–2027
 │   ├── ActionRecord.cs          ← C# DTO mirroring shared/schemas.py (snake_case JSON)
 │   ├── ActionCapture.cs         ← DocumentChanged subscription, builds ActionRecords
 │   ├── RoutineDetector.cs       ← in-session live detector → fires suggestion
-│   ├── NotificationUI.xaml(.cs) ← "Learn this routine?" WPF prompt
+│   ├── NotificationUI.xaml(.cs) ← "Learn this routine?" WPF prompt (orphaned — see README)
 │   ├── LogWriter.cs             ← async JSONL writer
-│   ├── PatternBridge.cs         ← launches the Python orchestrator
-│   ├── ShortcutRunner.cs        ← runs a saved shortcut
+│   ├── PatternBridge.cs         ← notifies BIM Assistant panel on a repeat (TCP :8080)
+│   ├── ShortcutRunner.cs        ← retired stub (execution → mcp-servers-for-revit)
+│   ├── README.md                ← role, build/deploy, known gaps
 │   └── App.cs, SessionInfo.cs, ElementSnapshot.cs
 │
 ├── detector/                    ← ★ routine detection gate (see §6)
@@ -159,7 +160,7 @@ revit-personalization/
 ## 5. The action log schema (`ActionRecord`)
 
 Defined in `shared/schemas.py` (pydantic) and mirrored in
-`RevitLogger/ActionRecord.cs` (C#). `schema_version: "2.0"`, snake_case JSON keys,
+`revit_addin/ActionRecord.cs` (C#). `schema_version: "2.0"`, snake_case JSON keys,
 one object per line in `session_*.jsonl`. Follows the Jang & Lee (2023) enhanced
 BIM-logging lexicon.
 

@@ -12,7 +12,7 @@
   },
 
   // ── C# ────────────────────────────────────────────────────────────────────
-  "dotnet.defaultSolution": "RevitLogger/RevitLogger.csproj",
+  "dotnet.defaultSolution": "revit_addin/RevitLogger.csproj",
   "[csharp]": {
     "editor.formatOnSave": true,
     "editor.tabSize": 4
@@ -29,8 +29,8 @@
   "files.exclude": {
     "**/__pycache__": true,
     "**/*.pyc": true,
-    "**/RevitLogger/bin": true,
-    "**/RevitLogger/obj": true,
+    "**/revit_addin/bin": true,
+    "**/revit_addin/obj": true,
     "**/docs/node_modules": true
   },
 

@@ -1,0 +1,69 @@
+<Window
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    x:Class="RevitLogger.NotificationUI"
+    Title="Revit Personalization"
+    Width="400" Height="128"
+    WindowStyle="ToolWindow"
+    ResizeMode="NoResize"
+    ShowInTaskbar="False"
+    Topmost="True"
+    Background="#1E1E2E"
+    Foreground="#CDD6F4">
+
+    <Grid Margin="14,10,14,10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ── Header row ─────────────────────────────────────────────── -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal">
+            <!-- Green pulse indicator -->
+            <Ellipse Width="8" Height="8"
+                     Fill="#A6E3A1"
+                     VerticalAlignment="Center"
+                     Margin="0,0,8,0"/>
+            <TextBlock x:Name="TitleText"
+                       FontSize="12" FontWeight="SemiBold"
+                       Foreground="#CDD6F4"
+                       VerticalAlignment="Center"
+                       Text="Routine Detected"/>
+        </StackPanel>
+
+        <!-- ── Routine label ──────────────────────────────────────────── -->
+        <TextBlock Grid.Row="1"
+                   x:Name="LabelText"
+                   FontSize="11"
+                   Foreground="#A6ADC8"
+                   TextWrapping="Wrap"
+                   VerticalAlignment="Center"
+                   Margin="0,6,0,4"/>
+
+        <!-- ── Action buttons ─────────────────────────────────────────── -->
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+
+            <Button x:Name="DismissButton"
+                    Content="Dismiss"
+                    Width="72" Height="26"
+                    Margin="0,0,8,0"
+                    Background="#313244"
+                    Foreground="#CDD6F4"
+                    BorderBrush="#45475A"
+                    BorderThickness="1"
+                    Click="OnDismiss"/>
+
+            <Button x:Name="LearnButton"
+                    Content="Learn as Shortcut"
+                    Width="140" Height="26"
+                    Background="#89B4FA"
+                    Foreground="#1E1E2E"
+                    BorderBrush="Transparent"
+                    FontWeight="SemiBold"
+                    Click="OnLearn"/>
+        </StackPanel>
+    </Grid>
+</Window>
