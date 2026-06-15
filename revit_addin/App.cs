@@ -12,18 +12,18 @@ namespace RevitLogger;
 /// Responsibilities (thesis §4.1 — Observer-Only Add-in):
 ///   • Subscribes to application-level DocumentChanged / lifecycle events.
 ///   • Manages one session (LogWriter + ActionCapture + RoutineDetector) per open project.
-///   • When RoutineDetector fires, forwards the detected pattern to RevitWriteServer
-///     via PatternBridge (direct TCP call — no Python, no user click needed).
+///   • When RoutineDetector fires, hands the detected pattern to the Python BIM Assistant
+///     chatbot via PatternBridge (no user click needed).
 ///
-/// Detection → panel flow (fully automatic):
+/// Detection → assistant flow (fully automatic):
 ///   1. User models in Revit (place element, set params, tag).
 ///   2. DocumentChanged fires → ActionCapture.ProcessEvent → RoutineDetector.Feed.
 ///   3. After ≥ 2 identical episodes: RoutineDetected event fires on the UI thread.
 ///   4. OnRoutineDetected starts Task.Run → PatternBridge.NotifyAsync (background).
-///   5. PatternBridge sends notify_pattern to RevitWriteServer TCP on localhost:8080.
-///   6. RevitWriteServer raises ExternalEvent → NotifyPatternCommand runs on UI thread.
-///   7. BIM Assistant dockable panel activates and Claude greets the user.
-///   No toast, no Python, no button clicks.
+///   5. PatternBridge writes pending_pattern.json and launches chatbot/notify_from_file.py.
+///   6. That starts the FastAPI chat server (if needed) and POSTs the pattern to :5000.
+///   7. The BIM Assistant opens in the browser and Claude greets the user.
+///   No toast, no button clicks.
 /// </summary>
 [Transaction(TransactionMode.Manual)]
 [Regeneration(RegenerationOption.Manual)]
@@ -198,14 +198,14 @@ public class App : IExternalApplication
         _sessions.Remove(key);
     }
 
-    // ── Routine detection → BIM Assistant panel ───────────────────────────────
+    // ── Routine detection → BIM Assistant chatbot ─────────────────────────────
 
     /// <summary>
     /// Called on the Revit UI thread when RoutineDetector confirms a repeated pattern.
     ///
     /// Fires PatternBridge on a background thread — NOT inline here.
-    /// PatternBridge makes a TCP call to RevitWriteServer which raises an ExternalEvent.
-    /// ExternalEvents need the UI thread to dispatch, so if we blocked here we'd deadlock.
+    /// PatternBridge does file I/O and launches a Python process, which must not run
+    /// on the Revit UI thread.
     /// </summary>
     private void OnRoutineDetected(object? sender, RoutineDetectedEventArgs args)
     {

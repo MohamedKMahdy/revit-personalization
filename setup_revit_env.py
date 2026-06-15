@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-One-time setup: copies ANTHROPIC_API_KEY from .env into
-%LOCALAPPDATA%\RevitPersonalization\.env so Revit can find it.
+One-time setup: writes the config the Revit add-in needs into
+%LOCALAPPDATA%\RevitPersonalization\.env —
 
-Run once, then restart Revit:
+    ANTHROPIC_API_KEY   copied from the repo .env (used by the chatbot)
+    REPO_ROOT           this repo's path  (so PatternBridge can find chatbot/)
+    PYTHON_EXE          this interpreter  (so PatternBridge can launch Python)
+
+Run once with the SAME Python you use to run the chatbot, then restart Revit:
     python setup_revit_env.py
 """
 import os
@@ -35,15 +39,23 @@ print(f"Key found: {key[:20]}…")
 
 # ── Write to LOCALAPPDATA location ────────────────────────────────────────────
 TARGET.parent.mkdir(parents=True, exist_ok=True)
-TARGET.write_text(f"ANTHROPIC_API_KEY={key}\n", encoding="utf-8")
+TARGET.write_text(
+    f"ANTHROPIC_API_KEY={key}\n"
+    f"REPO_ROOT={HERE}\n"
+    f"PYTHON_EXE={sys.executable}\n",
+    encoding="utf-8",
+)
 print(f"Written to: {TARGET}")
+print(f"  REPO_ROOT  = {HERE}")
+print(f"  PYTHON_EXE = {sys.executable}")
 
-# ── Verify Revit can find it ──────────────────────────────────────────────────
+# ── Next steps ────────────────────────────────────────────────────────────────
 print("\nSetup complete.")
 print("Next steps:")
 print("  1. Close Revit completely")
-print("  2. Reopen Revit 2027 and open any project")
-print("  3. The BIM Assistant panel will appear docked on the right")
-print("  4. Click '⚡ Test' to try the chat immediately")
+print("  2. Reopen Revit and open any project (the logger add-in loads automatically)")
+print("  3. Model as usual. When the add-in detects a repeated routine, the BIM")
+print("     Assistant opens in your browser at http://localhost:5000")
 print()
-print("The panel will also auto-activate when RevitLogger detects a pattern.")
+print("Tip: start the assistant manually any time with")
+print("     python chatbot/chat_server.py")

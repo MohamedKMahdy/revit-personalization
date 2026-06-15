@@ -20,7 +20,9 @@ User models in Revit
     → ActionCapture        translates the event into an enriched ActionRecord
       → LogWriter          appends JSONL to %LOCALAPPDATA%\RevitPersonalization\logs\
       → RoutineDetector    real-time CEI episode tracking (Place → SetParam* → Tag?)
-        → PatternBridge    on a repeat, notifies the BIM Assistant panel (TCP :8080)
+        → PatternBridge    on a repeat, hands the pattern to the Python BIM Assistant
+                           chatbot (writes pending_pattern.json + launches
+                           chatbot/notify_from_file.py → opens http://localhost:5000)
 ```
 
 ## Files
@@ -34,8 +36,7 @@ User models in Revit
 | `ElementSnapshot.cs` | Tracks parameter values to emit before/after diffs on `SetParam` |
 | `SessionInfo.cs` | `session_start` record (project hash, Revit version) |
 | `RoutineDetector.cs` | Real-time CEI episode detection (mirrors `log_reader.py` for ID compatibility) |
-| `PatternBridge.cs` | Notifies the BIM Assistant panel over TCP when a routine repeats |
-| `NotificationUI.xaml(.cs)` | ⚠️ Not currently wired — see note below |
+| `PatternBridge.cs` | On a repeat, launches the Python chatbot notifier (`http://localhost:5000`) |
 | `ShortcutRunner.cs` | Retired stub — execution moved to `mcp-servers-for-revit` |
 
 ## Build & deploy
@@ -44,10 +45,14 @@ Revit 2025/2026/2027 all host **.NET 8** — the project targets `net8.0-windows
 The Revit version only selects which API DLLs are referenced (default 2027):
 
 ```powershell
-# build against your installed Revit (override if not 2027)
+# 1. tell the add-in where Python + this repo live (run with the SAME Python you
+#    use for the chatbot — writes REPO_ROOT/PYTHON_EXE to %LOCALAPPDATA%\...\.env)
+python setup_revit_env.py
+
+# 2. build against your installed Revit (override if not 2027)
 dotnet build revit_addin\RevitLogger.csproj -c Release -p:RevitVersion=2026
 
-# copy the DLL into the Revit add-ins folder (close Revit first — DLL is locked while open)
+# 3. copy the DLL into the Revit add-ins folder (close Revit first — DLL is locked while open)
 .\deploy.ps1
 ```
 
@@ -57,13 +62,18 @@ The `.addin` manifest (`RevitLogger.addin`) deploys once to
 Logs land in `%LOCALAPPDATA%\RevitPersonalization\logs\` (`session_*.jsonl`, plus
 `_diag.txt` for troubleshooting).
 
-## Known gaps (flagged during the move out of revit-personalization root)
+## How the assistant is triggered
 
-- **`PatternBridge` needs `RevitWriteServer` running.** The "notify → BIM Assistant
-  panel" flow sends `notify_pattern` to a TCP server on `localhost:8080` that was
-  provided by the old `RevitWriteServer` add-in (removed from this repo). Detection
-  and logging work without it; only the auto-panel popup depends on it.
-- **`NotificationUI` is orphaned.** `App.cs` went fully automatic ("No toast") and
-  nothing constructs `NotificationUI`; its `onLearn` delegate referenced an
-  `App.LaunchOrchestrator` that no longer exists. Kept for the thesis UI story but
-  not on any active code path — remove it or re-wire it before relying on it.
+When `RoutineDetector` confirms a repeat, `PatternBridge`:
+
+1. writes the pattern to `%LOCALAPPDATA%\RevitPersonalization\pending_pattern.json`, then
+2. launches `PYTHON_EXE <REPO_ROOT>\chatbot\notify_from_file.py <pattern.json>`,
+
+which delegates to `chatbot.trigger.notify_pattern` — that starts the FastAPI chat
+server if it isn't running, POSTs the pattern to `/api/pattern`, and opens the browser
+at `http://localhost:5000`. `REPO_ROOT` and `PYTHON_EXE` come from the `.env` written
+by `setup_revit_env.py`; if they're missing, the pattern is still saved to disk and a
+note is written to `_diag.txt`, but the assistant won't auto-launch.
+
+> The add-in is **headless** (no WPF). The BIM Assistant is the browser chat at
+> `:5000`, so there is no in-Revit toast/panel.

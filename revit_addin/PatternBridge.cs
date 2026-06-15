@@ -1,90 +1,112 @@
-using System.Net.Sockets;
-using System.Text;
+using System.Diagnostics;
+using System.IO;
 using System.Text.Json.Nodes;
 
 namespace RevitLogger;
 
 /// <summary>
-/// Sends a notify_pattern JSON-RPC call to RevitWriteServer on localhost:8080.
+/// Hands a detected routine to the Python BIM Assistant chatbot (http://localhost:5000).
 ///
-/// Converts a RoutineDetectedEventArgs into the exact payload that
-/// RevitWriteServer's NotifyPatternCommand expects — no Python needed.
+/// The add-in is observer-only, so it does NOT host the assistant itself. It writes
+/// the pattern to %LOCALAPPDATA%\RevitPersonalization\pending_pattern.json and launches
+/// chatbot/notify_from_file.py, which delegates to chatbot.trigger.notify_pattern:
+/// that helper starts the chat server if it isn't running, POSTs the pattern to
+/// /api/pattern, and opens the browser.
 ///
-/// IMPORTANT: Always call this from a background thread (Task.Run).
-/// The TcpCommandServer in RevitWriteServer dispatches the command via ExternalEvent,
-/// which blocks until the Revit UI thread runs the handler. If PatternBridge were
-/// called from the UI thread, it would deadlock (UI thread waiting for TCP response
-/// while the ExternalEvent waits for the UI thread).
+/// REPO_ROOT and PYTHON_EXE are read from %LOCALAPPDATA%\RevitPersonalization\.env,
+/// written by `python setup_revit_env.py` (the documented one-time setup step).
 ///
-/// On success: RevitWriteServer shows the dockable BIM Assistant panel and starts
-/// the Claude greeting — no user action required.
+/// IMPORTANT: call this from a background thread (Task.Run) — it does file I/O and
+/// launches a process, neither of which should run on the Revit UI thread.
 /// </summary>
 public static class PatternBridge
 {
-    private const string Host    = "localhost";
-    private const int    Port    = 8080;
-    private const int    TimeoutMs = 5_000;   // connect + full round-trip timeout
-
     // ── Entry point ───────────────────────────────────────────────────────────
 
-    public static async Task NotifyAsync(RoutineDetectedEventArgs args)
+    public static Task NotifyAsync(RoutineDetectedEventArgs args)
     {
         try
         {
             App.DiagLog($"PatternBridge: preparing '{args.Label}' ({args.Count}×)");
 
-            var motif = BuildMotif(args.LatestEpisode);
-            var seq   = BuildToolSequence(args.LatestEpisode);
-
+            // Payload shape matches chatbot/chat_server.py PatternIn (/api/pattern).
             var payload = new JsonObject
             {
-                ["jsonrpc"] = "2.0",
-                ["method"]  = "notify_pattern",
-                ["id"]      = "pb_" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                ["params"]  = new JsonObject
-                {
-                    ["label"]         = args.Label,
-                    ["count"]         = args.Count,
-                    ["motif"]         = motif,
-                    ["tool_sequence"] = seq,
-                }
+                ["label"]         = args.Label,
+                ["count"]         = args.Count,
+                ["motif"]         = BuildMotif(args.LatestEpisode),
+                ["tool_sequence"] = BuildToolSequence(args.LatestEpisode),
+                ["examples"]      = new JsonArray(),
             };
 
-            var json = payload.ToJsonString();
-            App.DiagLog($"PatternBridge: payload ({json.Length} chars): {json[..Math.Min(200, json.Length)]}…");
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RevitPersonalization");
+            Directory.CreateDirectory(dir);
 
-            // Connect with timeout (RevitWriteServer might not be running)
-            using var timeoutCts = new CancellationTokenSource(TimeoutMs);
-            using var client     = new TcpClient();
+            var patternPath = Path.Combine(dir, "pending_pattern.json");
+            File.WriteAllText(patternPath, payload.ToJsonString());
+            App.DiagLog($"PatternBridge: wrote {patternPath}");
 
-            await client.ConnectAsync(Host, Port, timeoutCts.Token);
-            using var stream = client.GetStream();
+            var (python, repoRoot) = ReadPythonConfig(dir);
+            if (python is null || repoRoot is null)
+            {
+                App.DiagLog("PatternBridge: PYTHON_EXE / REPO_ROOT missing in .env — "
+                          + "run 'python setup_revit_env.py' once. Pattern saved but assistant not launched.");
+                return Task.CompletedTask;
+            }
 
-            // Send the JSON request
-            var bytes = Encoding.UTF8.GetBytes(json);
-            await stream.WriteAsync(bytes, timeoutCts.Token);
-            await stream.FlushAsync(timeoutCts.Token);
+            var script = Path.Combine(repoRoot, "chatbot", "notify_from_file.py");
+            if (!File.Exists(script))
+            {
+                App.DiagLog($"PatternBridge: notifier not found: {script}");
+                return Task.CompletedTask;
+            }
 
-            // Read response — blocks until the ExternalEvent completes and
-            // RevitWriteServer closes the connection.  We discard the bytes;
-            // we just need the synchronisation guarantee.
-            var buf = new byte[4096];
-            while (await stream.ReadAsync(buf, timeoutCts.Token) > 0) { /* discard */ }
+            var psi = new ProcessStartInfo
+            {
+                FileName         = python,
+                UseShellExecute  = false,
+                CreateNoWindow   = true,
+                WorkingDirectory = repoRoot,
+            };
+            psi.ArgumentList.Add(script);
+            psi.ArgumentList.Add(patternPath);
 
-            App.DiagLog($"PatternBridge: done — BIM Assistant panel should now be active");
-        }
-        catch (OperationCanceledException)
-        {
-            App.DiagLog($"PatternBridge: timeout ({TimeoutMs} ms) — RevitWriteServer not running or busy");
-        }
-        catch (SocketException sex)
-        {
-            App.DiagLog($"PatternBridge: socket error — RevitWriteServer not loaded? ({sex.SocketErrorCode}: {sex.Message})");
+            Process.Start(psi);
+            App.DiagLog("PatternBridge: launched chatbot notifier — BIM Assistant opening at http://localhost:5000");
         }
         catch (Exception ex)
         {
             App.DiagLog($"PatternBridge ERROR: {ex.GetType().Name}: {ex.Message}");
         }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Reads PYTHON_EXE and REPO_ROOT from %LOCALAPPDATA%\RevitPersonalization\.env
+    /// (written by setup_revit_env.py). Returns (null, null) if either is missing.
+    /// </summary>
+    private static (string? Python, string? RepoRoot) ReadPythonConfig(string dir)
+    {
+        try
+        {
+            var envPath = Path.Combine(dir, ".env");
+            if (!File.Exists(envPath)) return (null, null);
+
+            string? python = null, repo = null;
+            foreach (var raw in File.ReadAllLines(envPath))
+            {
+                var line = raw.Trim();
+                if (line.StartsWith("PYTHON_EXE="))
+                    python = line["PYTHON_EXE=".Length..].Trim().Trim('"');
+                else if (line.StartsWith("REPO_ROOT="))
+                    repo = line["REPO_ROOT=".Length..].Trim().Trim('"');
+            }
+            return (python, repo);
+        }
+        catch { return (null, null); }
     }
 
     // ── Build motif ───────────────────────────────────────────────────────────
@@ -133,8 +155,8 @@ public static class PatternBridge
     //     {"tool":"create_annotation_tag", "arguments":{"element_id":"{{last_element_id}}",...}}
     //   ]
     //
-    // {{last_element_id}} is a placeholder resolved by NotifyPatternCommand.ExecuteToolSequence
-    // to the ElementId returned by the most recent place_element call.
+    // {{last_element_id}} is a placeholder resolved by revit_bridge.execute_shortcut
+    // (Python) to the ElementId returned by the most recent place_element call.
 
     private static JsonArray BuildToolSequence(List<ActionRecord> episode)
     {
@@ -205,7 +227,7 @@ public static class PatternBridge
 
     /// <summary>
     /// Returns "FamilyName : TypeName" when TypeName is set, else just "FamilyName".
-    /// Matches the format expected by NotifyPatternCommand.ResolveFamilyTypeId.
+    /// Matches the family_type format the chatbot tool_sequence / revit_bridge expects.
     /// </summary>
     private static string FamilyTypeLabel(ActionRecord a)
         => string.IsNullOrEmpty(a.TypeName)

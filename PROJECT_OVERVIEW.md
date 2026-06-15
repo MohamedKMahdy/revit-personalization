@@ -112,9 +112,8 @@ revit-personalization/
 │   ├── ActionRecord.cs          ← C# DTO mirroring shared/schemas.py (snake_case JSON)
 │   ├── ActionCapture.cs         ← DocumentChanged subscription, builds ActionRecords
 │   ├── RoutineDetector.cs       ← in-session live detector → fires suggestion
-│   ├── NotificationUI.xaml(.cs) ← "Learn this routine?" WPF prompt (orphaned — see README)
 │   ├── LogWriter.cs             ← async JSONL writer
-│   ├── PatternBridge.cs         ← notifies BIM Assistant panel on a repeat (TCP :8080)
+│   ├── PatternBridge.cs         ← on a repeat, launches the Python chatbot (:5000)
 │   ├── ShortcutRunner.cs        ← retired stub (execution → mcp-servers-for-revit)
 │   ├── README.md                ← role, build/deploy, known gaps
 │   └── App.cs, SessionInfo.cs, ElementSnapshot.cs
