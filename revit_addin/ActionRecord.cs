@@ -17,7 +17,7 @@ public enum OperationClass { Model, Parameter, Annotation, View }
 ///   • level_name, view_type, phase_name  — rich spatial/temporal context
 ///
 /// Field names use snake_case, matching the Python shared/schemas.py model.
-/// Serialised with System.Text.Json (built into .NET 8, no NuGet dependency).
+/// Serialised with System.Text.Json (built into .NET, no NuGet dependency).
 /// </summary>
 public class ActionRecord
 {

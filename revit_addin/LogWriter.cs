@@ -17,7 +17,7 @@ namespace RevitLogger;
 /// Last line: session_end marker
 ///
 /// Uses a BlockingCollection so the Revit UI thread never blocks on I/O.
-/// Serialised with System.Text.Json (built into .NET 8, no NuGet dependency).
+/// Serialised with System.Text.Json (built into .NET, no NuGet dependency).
 /// If the write loop crashes, the exception is written to a sidecar .error.txt file.
 /// </summary>
 public class LogWriter : IDisposable

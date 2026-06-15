@@ -41,8 +41,9 @@ User models in Revit
 
 ## Build & deploy
 
-Revit 2025/2026/2027 all host **.NET 8** — the project targets `net8.0-windows`.
-The Revit version only selects which API DLLs are referenced (default 2027):
+Revit 2025/2026 host **.NET 8**; Revit 2027 hosts **.NET 10** (verified from each
+`RevitAPI.dll`). The project picks the matching `TargetFramework` automatically from
+`RevitVersion` (default 2027 → `net10.0-windows`), which also selects the API DLLs:
 
 ```powershell
 # 1. tell the add-in where Python + this repo live (run with the SAME Python you
