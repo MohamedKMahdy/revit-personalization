@@ -38,3 +38,11 @@ chatbot/server_out.txt
 
 # Word temp files
 docs/~$*.docx
+
+# C# Revit plugins — moved out of this repo
+# RevitLogger → generalBIMlog repo
+# RevitWriteServer → mcp-servers-for-revit or generalBIMlog
+RevitLogger/
+RevitWriteServer/
+revit-personalization.sln
+results/
