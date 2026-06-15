@@ -1,16 +1,14 @@
 # deploy.ps1 — copy the built DLL into the Revit add-ins folder.
 # Run AFTER closing Revit (the DLL is locked while Revit is open).
 #
+# Supported: Revit 2025 and 2026 (both .NET 8 / net8.0-windows).
 # Usage:
-#   .\deploy.ps1                    # default: Revit 2027 (net10.0-windows)
-#   .\deploy.ps1 -RevitVersion 2026 # Revit 2026 (net8.0-windows)
+#   .\deploy.ps1                    # default: Revit 2026
+#   .\deploy.ps1 -RevitVersion 2025 # Revit 2025
 
-param([string]$RevitVersion = "2027")
+param([string]$RevitVersion = "2026")
 
-# Revit 2027 hosts .NET 10; Revit 2025/2026 host .NET 8.
-$tfm = if ($RevitVersion -eq "2027") { "net10.0-windows" } else { "net8.0-windows" }
-
-$src  = "$PSScriptRoot\revit_addin\bin\Release\$tfm\RevitLogger.dll"
+$src  = "$PSScriptRoot\revit_addin\bin\Release\net8.0-windows\RevitLogger.dll"
 $dest = "$env:APPDATA\Autodesk\Revit\Addins\$RevitVersion\RevitLogger.dll"
 
 if (-not (Test-Path $src)) {

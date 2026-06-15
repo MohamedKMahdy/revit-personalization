@@ -26,12 +26,11 @@ pip install -r requirements.txt --user
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
-### 3. C# add-in (Revit 2025/2026 → .NET 8, Revit 2027 → .NET 10)
+### 3. C# add-in (Revit 2025/2026, .NET 8)
 ```powershell
 python setup_revit_env.py                                  # writes REPO_ROOT/PYTHON_EXE for the add-in
-dotnet build revit_addin\RevitLogger.csproj -c Release     # default Revit 2027 (net10)
-# for 2026:  dotnet build revit_addin\RevitLogger.csproj -c Release -p:RevitVersion=2026
-.\deploy.ps1                                               # close Revit first (add -RevitVersion 2026 if needed)
+dotnet build revit_addin\RevitLogger.csproj -c Release     # default Revit 2026; -p:RevitVersion=2025 for 2025
+.\deploy.ps1                                               # close Revit first (default 2026; -RevitVersion 2025 for 2025)
 ```
 
 ---
@@ -71,7 +70,7 @@ revit-personalization/
 │   ├── architecture.md       Full system architecture
 │   └── revit-plugin.md       Revit add-in: data collected and why
 │
-├── revit_addin/             C# Revit add-in — observer/logger (Revit 2025/26 .NET 8, 2027 .NET 10)
+├── revit_addin/             C# Revit add-in — observer/logger (Revit 2025/2026, .NET 8)
 │   ├── App.cs                IExternalApplication entry point
 │   ├── ActionCapture.cs      DocumentChanged event handler
 │   ├── ElementSnapshot.cs    Before/after parameter diff cache

@@ -4,7 +4,7 @@
     <Name>BIM Personalization Logger</Name>
     <!--
       Assembly path: copy RevitLogger.dll to the same folder as this .addin file.
-      Deploy both to: %APPDATA%\Autodesk\Revit\Addins\2027\
+      Deploy both to: %APPDATA%\Autodesk\Revit\Addins\2026\  (or \2025\)
     -->
     <Assembly>RevitLogger.dll</Assembly>
     <FullClassName>RevitLogger.App</FullClassName>

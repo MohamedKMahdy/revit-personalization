@@ -41,17 +41,17 @@ User models in Revit
 
 ## Build & deploy
 
-Revit 2025/2026 host **.NET 8**; Revit 2027 hosts **.NET 10** (verified from each
-`RevitAPI.dll`). The project picks the matching `TargetFramework` automatically from
-`RevitVersion` (default 2027 → `net10.0-windows`), which also selects the API DLLs:
+Supported: **Revit 2025 and 2026** (both host **.NET 8** → `net8.0-windows`). The
+`RevitVersion` property (default 2026) selects which API DLLs are referenced. Revit
+2027 is dropped for now — it hosts **.NET 10** and would need `net10.0-windows`.
 
 ```powershell
 # 1. tell the add-in where Python + this repo live (run with the SAME Python you
 #    use for the chatbot — writes REPO_ROOT/PYTHON_EXE to %LOCALAPPDATA%\...\.env)
 python setup_revit_env.py
 
-# 2. build against your installed Revit (override if not 2027)
-dotnet build revit_addin\RevitLogger.csproj -c Release -p:RevitVersion=2026
+# 2. build (default Revit 2026; use -p:RevitVersion=2025 for Revit 2025)
+dotnet build revit_addin\RevitLogger.csproj -c Release
 
 # 3. copy the DLL into the Revit add-ins folder (close Revit first — DLL is locked while open)
 .\deploy.ps1

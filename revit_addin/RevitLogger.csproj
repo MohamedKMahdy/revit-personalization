@@ -1,30 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Revit install whose API DLLs are referenced AND whose .NET runtime is targeted.
-         Override to build against another version, e.g.  dotnet build -p:RevitVersion=2026 -->
-    <RevitVersion Condition="'$(RevitVersion)' == ''">2027</RevitVersion>
-  </PropertyGroup>
-
-  <!-- The add-in MUST target the same .NET major version as the Revit host, or Revit
-       will refuse to load it. Verified from each RevitAPI.dll's TargetFramework:
-         Revit 2025/2026 -> .NET 8   (net8.0-windows)
-         Revit 2027      -> .NET 10  (net10.0-windows) -->
-  <PropertyGroup Condition="'$(RevitVersion)' == '2027'">
-    <TargetFramework>net10.0-windows</TargetFramework>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(RevitVersion)' != '2027'">
+    <!-- Supported Revit versions: 2025 and 2026 (both host .NET 8 → net8.0-windows).
+         Default is 2026; build against 2025 with:  dotnet build -p:RevitVersion=2025
+         Revit 2027 is dropped for now — it hosts .NET 10 (would need net10.0-windows). -->
+    <RevitVersion Condition="'$(RevitVersion)' == ''">2026</RevitVersion>
     <TargetFramework>net8.0-windows</TargetFramework>
-  </PropertyGroup>
 
-  <PropertyGroup>
     <AssemblyName>RevitLogger</AssemblyName>
     <RootNamespace>RevitLogger</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
     <!-- No external NuGet packages, no WPF/WinForms — uses System.Text.Json built into
-         .NET. The add-in is headless; the BIM Assistant UI is the Python chatbot (:5000). -->
+         .NET 8. The add-in is headless; the BIM Assistant UI is the Python chatbot (:5000). -->
   </PropertyGroup>
 
   <ItemGroup>

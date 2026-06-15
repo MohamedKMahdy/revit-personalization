@@ -108,7 +108,7 @@ revit-personalization/
 ├── shared/
 │   └── schemas.py               ← ActionRecord, CandidateRoutine, Motif, ShortcutConfig (pydantic)
 │
-├── revit_addin/                 ← C# add-in (OBSERVER). Revit 2025/26 (.NET 8), 2027 (.NET 10)
+├── revit_addin/                 ← C# add-in (OBSERVER). Revit 2025/2026, .NET 8
 │   ├── ActionRecord.cs          ← C# DTO mirroring shared/schemas.py (snake_case JSON)
 │   ├── ActionCapture.cs         ← DocumentChanged subscription, builds ActionRecords
 │   ├── RoutineDetector.cs       ← in-session live detector → fires suggestion
