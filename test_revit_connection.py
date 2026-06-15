@@ -22,7 +22,7 @@ WHAT YOU NEED BEFORE RUNNING
   2. Open any .rvt project  (even a blank one)
   3. Wait ~10 seconds for the add-in to load
   4. Run this script:
-       cd C:\Users\DE1E7A\revit-personalization
+       cd C:/Users/DE1E7A/revit-personalization
        python test_revit_connection.py
 
 WHAT WILL HAPPEN

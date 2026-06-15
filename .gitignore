@@ -28,3 +28,13 @@ Thumbs.db
 # IDE
 .idea/
 *.swp
+
+# Generated eval outputs
+eval/results/
+
+# Server logs
+chatbot/server_err.txt
+chatbot/server_out.txt
+
+# Word temp files
+docs/~$*.docx
