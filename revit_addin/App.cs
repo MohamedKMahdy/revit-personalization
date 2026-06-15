@@ -1,3 +1,4 @@
+using System.Reflection;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Events;
@@ -48,6 +49,8 @@ public class App : IExternalApplication
         ctrl.DocumentSavedAs  += OnDocumentSavedAs;
 
         application.ViewActivated += OnViewActivated;
+
+        CreateRibbonPanel(application);
 
         DiagLog("OnStartup: event subscriptions registered");
         return Result.Succeeded;
@@ -242,6 +245,35 @@ public class App : IExternalApplication
     private static string VersionName(object? sender)
         => sender is Autodesk.Revit.ApplicationServices.Application a
             ? a.VersionName : "";
+
+    // ── Ribbon panel ─────────────────────────────────────────────────────────
+
+    private static void CreateRibbonPanel(UIControlledApplication application)
+    {
+        try
+        {
+            const string TabName = "BIM Personalization";
+            try { application.CreateRibbonTab(TabName); } catch { /* already exists */ }
+
+            var panel = application.CreateRibbonPanel(TabName, "BIM Assistant");
+
+            var btn = new PushButtonData(
+                "OpenAssistant",
+                "Open\nAssistant",
+                Assembly.GetExecutingAssembly().Location,
+                "RevitLogger.OpenAssistantCommand")
+            {
+                ToolTip = "Start the BIM Personalization chat assistant and open it in the browser.",
+            };
+
+            panel.AddItem(btn);
+            DiagLog("OnStartup: BIM Personalization ribbon panel created");
+        }
+        catch (Exception ex)
+        {
+            DiagLog($"OnStartup: Ribbon setup failed (non-fatal): {ex.Message}");
+        }
+    }
 
     // ── Diagnostics ───────────────────────────────────────────────────────────
 
