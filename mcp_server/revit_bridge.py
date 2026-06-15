@@ -5,44 +5,41 @@ ARCHITECTURE
 ============
 The mcp-servers-for-revit stack has two layers:
 
-  1. TypeScript MCP server (npx mcp-server-for-revit, stdio)
-       → translates MCP tool calls → JSON-RPC 2.0 over TCP
-  2. C# Revit Plugin (inside Revit 2026, localhost:8080, TCP)
+  1. TypeScript MCP server (optional) → translates MCP tool calls → JSON-RPC 2.0 over TCP
+  2. C# Revit plugin (inside Revit 2025/2026, localhost:8080, TCP)
        → executes commands via Revit API transactions
 
 We bypass the TypeScript layer and talk directly to the C# plugin's TCP socket.
-This keeps the bridge simple and avoids subprocess/async complexity.
 
-TOOL COVERAGE (v1.0.0, commit 1a52de9)
-=======================================
-  create_point_based_element  — place doors/windows/furniture  ✅
-  get_available_family_types  — resolve family names → typeId   ✅
-  get_current_view_info       — active view details             ✅
-  get_selected_elements       — current selection               ✅
-  send_code_to_revit          — execute C# inside Revit         ✅ (used for gaps below)
-  set_element_parameter       — set param by name/value        ⚠ via send_code_to_revit
-  create_element_tag          — tag a specific element         ⚠ via send_code_to_revit
+BACKEND CONTRACTS (verified against the command/handler/model sources)
+======================================================================
+  create_point_based_element  ← {"data":[{"category","typeId","locationPoint":{x,y,z},
+                                           "width","height","baseLevel","baseOffset",
+                                           "hostWallId","facingFlipped"}]}   (mm)
+                               → AIResult<List<int>>  {Success,Message,Response:[ids]}
+  set_element_parameter        ← {"elementId":int,"parameters":[{"name","value"}]}
+                               → AIResult<List<string>>
+  tag_element                  ← {"elementId":int,"useLeader":bool,"offsetX","offsetY","tagTypeId"?}
+                               → AIResult<int>   (tag id in Response)
+  operate_element              ← {"data":{"elementIds":[int],"action":"Select"|"Isolate"|...}}
+                               → AIResult<string>
+  get_available_family_types   ← {"categoryList":[str],"familyNameFilter"?:str,"limit"?:int}
+                               → bare list [ {FamilyTypeId,FamilyName,TypeName,Category}, ... ]
 
-GAPS vs. METHODOLOGY REQUIREMENTS
-===================================
-  set_parameter  — modify_element.js exists but is an empty stub in v1.0.0
-  tag_element    — only tag_all_walls / tag_all_rooms available
-  → Per methodology §4 "if a needed operation is missing, add it as a backend
-    tool extension". Tracked in docs/backend_extensions_needed.md.
-  → Interim: use send_code_to_revit with inline C# (validated approach).
+Responses use the AIResult envelope {Success, Message, Response} (PascalCase),
+EXCEPT get_available_family_types which returns the list directly.
 
-REVIT VERSION
-=============
-  Plugin supports Revit 2020–2026.  Use Revit 2026 for execution.
-  The C# logging add-in (RevitLogger) can run in Revit 2027 for logging;
-  use Revit 2026 for write operations until a 2027 plugin build is available.
+EXECUTION SAFETY
+================
+Only the allowlisted pipeline tools (place_element / set_parameter /
+create_annotation_tag) are dispatchable. send_code_to_revit is NEVER reachable
+through the pipeline — see shared/tool_allowlist.py and _dispatch_tool().
 
-INSTALLATION
-============
-  1. Download revit-plugin-2026.zip from GitHub Releases (v1.0.0)
-  2. Extract to %AppData%\Autodesk\Revit\Addins\2026\
-  3. Open Revit 2026 — the plugin auto-starts and listens on TCP localhost:8080
-  4. Verify: call say_hello — should show a dialog in Revit
+REVIT VERSION / INSTALL
+=======================
+  Use Revit 2025 or 2026 with the plugin installed at
+  %AppData%\\Autodesk\\Revit\\Addins\\<ver>\\. It listens on TCP localhost:8080.
+  Verify with: call say_hello → a greeting dialog shows in Revit.
 """
 from __future__ import annotations
 
@@ -76,7 +73,9 @@ def _call_plugin(command: str, params: dict, timeout: float = REVIT_PLUGIN_TIMEO
     The plugin listens on localhost:8080 and responds with a JSON-RPC result.
     Each call opens a new connection (the TypeScript layer reconnects per call too).
 
-    Returns the result dict, or {"error": "...", "available": False} if unreachable.
+    Returns the JSON-RPC `result` (usually an AIResult dict {Success, Message,
+    Response}; a bare list for get_available_family_types), or
+    {"error": "...", "available": False} if unreachable.
     """
     request_id = str(int(time.time() * 1000))
     payload = json.dumps({
@@ -99,7 +98,6 @@ def _call_plugin(command: str, params: dict, timeout: float = REVIT_PLUGIN_TIMEO
                 if not chunk:
                     break
                 chunks.append(chunk.decode("utf-8"))
-                # Try to parse — break when we have a complete object
                 buf = "".join(chunks)
                 try:
                     response = json.loads(buf)
@@ -117,8 +115,7 @@ def _call_plugin(command: str, params: dict, timeout: float = REVIT_PLUGIN_TIMEO
             "error": (
                 f"mcp-servers-for-revit C# plugin not reachable at "
                 f"{REVIT_PLUGIN_HOST}:{REVIT_PLUGIN_PORT}. "
-                "Ensure Revit 2026 is open with the plugin installed. "
-                "See docs/backend_extensions_needed.md for installation steps."
+                "Ensure Revit 2025/2026 is open with the plugin installed."
             ),
             "available": False,
         }
@@ -183,167 +180,64 @@ def model_query_state(query: str) -> dict:
         return _call_plugin("get_current_view_info", {})
 
 
-def get_family_type_id(family_name: str, category: str = "") -> int | None:
+def _resolve_family_type(family_name: str, category: str = "") -> dict | None:
     """
-    Resolve a family name string to a Revit typeId (integer ElementId).
+    Resolve a family/type name to its FamilyTypeInfo dict via get_available_family_types.
 
-    create_point_based_element requires typeId, not a name string.
-    This helper calls get_available_family_types and does a fuzzy name match.
+    family_name may be "Family" or "Family : Type" (the format PatternBridge emits).
+    The backend filters by family OR type substring, so we filter on the family part
+    and then match the full requested label.
 
-    Returns the typeId int, or None if not found.
+    Returns {FamilyTypeId, FamilyName, TypeName, Category, UniqueId} or None.
+    (Response keys are PascalCase — the backend returns a bare List<FamilyTypeInfo>.)
     """
-    args: dict = {"familyNameFilter": family_name, "limit": 10}
+    requested = (family_name or "").strip()
+    fam_part = requested.split(":")[0].strip()
+    if not fam_part:
+        return None
+
+    args: dict = {"familyNameFilter": fam_part, "limit": 50}
     if category:
         args["categoryList"] = [category]
 
     result = _call_plugin("get_available_family_types", args)
-    if "error" in result:
+    if isinstance(result, dict) and "error" in result:
         return None
 
-    # Result is a list of {typeId, familyName, typeName, ...}
-    items = result if isinstance(result, list) else result.get("familyTypes", result.get("types", []))
+    # Bare list, or (defensively) an AIResult-wrapped list under "Response".
+    items = result if isinstance(result, list) else result.get("Response", []) if isinstance(result, dict) else []
     if not items:
         return None
 
-    # Exact match first, then partial
-    name_lower = family_name.lower()
-    for item in items:
-        fn = (item.get("familyName", "") + ":" + item.get("typeName", "")).lower()
-        if name_lower in fn or fn.startswith(name_lower):
-            return item.get("typeId") or item.get("id")
+    req_lower = requested.lower()
 
-    # Fallback: return first result
-    first = items[0] if items else {}
-    return first.get("typeId") or first.get("id")
+    def label(it: dict) -> str:
+        return f"{it.get('FamilyName', '')} : {it.get('TypeName', '')}".strip().lower()
+
+    # Exact full-label or family-name match, then substring.
+    for it in items:
+        if req_lower == label(it) or req_lower == (it.get("FamilyName", "") or "").lower():
+            return it
+    for it in items:
+        if req_lower in label(it) or fam_part.lower() in (it.get("FamilyName", "") or "").lower():
+            return it
+    return items[0]
+
+
+def get_family_type_id(family_name: str, category: str = "") -> int | None:
+    """Resolve a family/type name to a Revit typeId (int ElementId), or None."""
+    info = _resolve_family_type(family_name, category)
+    if info and info.get("FamilyTypeId") is not None:
+        try:
+            return int(info["FamilyTypeId"])
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2.  Write operations (via mcp-servers-for-revit C# plugin)
+# 2.  Connection test
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def place_element(
-    family_name: str,
-    location_x: float = 0.0,
-    location_y: float = 0.0,
-    location_z: float = 0.0,
-    width: float = 900.0,
-    height: float = 2100.0,
-    base_level: float = 0.0,
-    base_offset: float = 0.0,
-    host_wall_id: int | None = None,
-    type_id: int | None = None,
-) -> dict:
-    """
-    Place a point-based element (door, window, furniture) in the active view.
-
-    Maps to mcp-servers-for-revit: create_point_based_element.
-    Units: millimeters.
-
-    Args:
-        family_name: Revit family name (used to resolve typeId if not provided).
-        location_x/y/z: Placement coordinates in mm.
-        width/height: Element dimensions in mm.
-        base_level: Base level height in mm.
-        base_offset: Offset from base level in mm.
-        host_wall_id: ElementId of host wall (auto-detected if not provided).
-        type_id: Direct typeId override (skips family name lookup).
-    """
-    if type_id is None:
-        type_id = get_family_type_id(family_name)
-
-    element_data: dict = {
-        "name": family_name,
-        "locationPoint": {"x": location_x, "y": location_y, "z": location_z},
-        "width": width,
-        "height": height,
-        "baseLevel": base_level,
-        "baseOffset": base_offset,
-    }
-    if type_id is not None:
-        element_data["typeId"] = type_id
-    if host_wall_id is not None:
-        element_data["hostWallId"] = host_wall_id
-
-    return _call_plugin("create_point_based_element", {"data": [element_data]})
-
-
-def set_element_parameter(element_id: int, param_name: str, value) -> dict:
-    """
-    Set a parameter value on a Revit element by name.
-
-    INTERIM IMPLEMENTATION: uses send_code_to_revit with inline C# code.
-    This is the documented interim approach until a proper set_element_parameter
-    tool is added to the backend (see docs/backend_extensions_needed.md).
-
-    Handles String, Double, and Integer storage types automatically.
-    """
-    # Escape quotes in param_name and string values to avoid C# injection
-    safe_param = param_name.replace('"', '\\"')
-    if isinstance(value, str):
-        val_expr = f'param.Set("{value.replace(chr(34), chr(92) + chr(34))}")'
-    elif isinstance(value, float):
-        val_expr = f"param.Set({value})"
-    else:
-        val_expr = f"param.Set((double){value})"
-
-    code = f"""
-var elem = Document.GetElement(new ElementId({element_id}L));
-if (elem == null) return "ERROR: element {element_id} not found";
-var param = elem.LookupParameter("{safe_param}");
-if (param == null) return "ERROR: parameter '{safe_param}' not found on element";
-if (param.IsReadOnly) return "ERROR: parameter '{safe_param}' is read-only";
-using (var tx = new Transaction(Document, "Set {safe_param}")) {{
-    tx.Start();
-    if (param.StorageType == StorageType.String)
-        param.Set("{value}");
-    else if (param.StorageType == StorageType.Double)
-        {val_expr};
-    else if (param.StorageType == StorageType.Integer)
-        param.Set({int(value) if not isinstance(value, str) else 0});
-    tx.Commit();
-}}
-return "OK: {safe_param} = {value}";
-"""
-    return _call_plugin("send_code_to_revit", {"code": code, "parameters": []})
-
-
-def create_element_tag(element_id: int, tag_family_name: str) -> dict:
-    """
-    Place an annotation tag on a specific element.
-
-    INTERIM IMPLEMENTATION: uses send_code_to_revit with inline C# code.
-    Searches loaded tag families by name and places the tag at the element's
-    location in the active view.
-
-    See docs/backend_extensions_needed.md for the planned proper extension.
-    """
-    safe_tag = tag_family_name.replace('"', '\\"')
-    code = f"""
-var elem = Document.GetElement(new ElementId({element_id}L));
-if (elem == null) return "ERROR: element {element_id} not found";
-var activeView = Document.ActiveView;
-// Find matching tag family symbol
-var tagSymbol = new FilteredElementCollector(Document)
-    .OfClass(typeof(FamilySymbol))
-    .Cast<FamilySymbol>()
-    .FirstOrDefault(fs =>
-        fs.FamilyName.IndexOf("{safe_tag}", StringComparison.OrdinalIgnoreCase) >= 0 ||
-        fs.Name.IndexOf("{safe_tag}", StringComparison.OrdinalIgnoreCase) >= 0);
-if (tagSymbol == null) return "ERROR: tag family '{safe_tag}' not found";
-if (!tagSymbol.IsActive) tagSymbol.Activate();
-using (var tx = new Transaction(Document, "Tag element")) {{
-    tx.Start();
-    var refLink = new Reference(elem);
-    var loc = (elem.Location as LocationPoint)?.Point ?? XYZ.Zero;
-    var tag = IndependentTag.Create(
-        Document, tagSymbol.Id, activeView.Id,
-        refLink, false, TagOrientation.Horizontal, loc);
-    tx.Commit();
-    return "OK: tagged element {element_id} -> tag " + tag.Id.Value.ToString();
-}}
-"""
-    return _call_plugin("send_code_to_revit", {"code": code, "parameters": []})
-
 
 def say_hello() -> dict:
     """
@@ -351,32 +245,6 @@ def say_hello() -> dict:
     Use this first to confirm the plugin is running and reachable.
     """
     return _call_plugin("say_hello", {})
-
-
-def notify_pattern(
-    label: str,
-    count: int,
-    motif: dict,
-    tool_sequence: list[dict],
-) -> dict:
-    """
-    Show the BIM Assistant dockable panel inside Revit with the detected pattern.
-
-    This opens the WPF chat panel, which streams a Claude greeting explaining
-    the pattern and lets the user confirm or dismiss before execution.
-
-    Args:
-        label:         Human-readable routine name, e.g. "Place Door + 4 Params + Tag"
-        count:         How many times the routine was detected
-        motif:         Structured motif dict from the Pattern Agent
-        tool_sequence: List of MCP tool-call dicts (from the Macro Agent)
-    """
-    return _call_plugin("notify_pattern", {
-        "label":         label,
-        "count":         count,
-        "motif":         motif,
-        "tool_sequence": tool_sequence,
-    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -393,14 +261,14 @@ def execute_shortcut(
     mcp-servers-for-revit C# plugin step by step.
 
     Under the methodology (§4.1):
-      - C# add-in is OBSERVER ONLY — it does NOT execute model writes.
+      - C# logging add-in is OBSERVER ONLY — it does NOT execute model writes.
       - All writes go through this bridge → mcp-servers-for-revit plugin.
       - Called after explicit user confirmation.
 
-    Tool name mapping (motif → plugin):
-      place_element           → create_point_based_element  (with typeId resolution)
-      set_parameter           → set_element_parameter       (via send_code_to_revit)
-      create_annotation_tag   → create_element_tag           (via send_code_to_revit)
+    Tool name mapping (motif → backend command):
+      place_element           → create_point_based_element  (typeId resolved by name)
+      set_parameter           → set_element_parameter
+      create_annotation_tag   → tag_element
 
     Args:
         shortcut_id:   ID of the saved ShortcutConfig (for logging/tracing).
@@ -444,14 +312,13 @@ def execute_shortcut(
                 else:
                     arguments.pop(key)
 
-        # Map motif tool names → actual backend commands
         result = _dispatch_tool(tool, arguments)
         results.append({"step": i + 1, "tool": tool, "arguments": arguments, "result": result})
 
         # Track last placed element ID for chaining
         last_element_id = _extract_element_id(result) or last_element_id
 
-    errors = [r for r in results if "error" in r.get("result", {})]
+    errors = [r for r in results if _step_failed(r.get("result", {}))]
     return {
         "shortcut_id": shortcut_id,
         "steps_executed": len(results),
@@ -476,39 +343,57 @@ def execute_tool_sequence(
 
 def _dispatch_tool(tool: str, arguments: dict) -> dict:
     """
-    Map permitted motif tool names to RevitWriteServer TCP commands.
+    Map permitted motif tool names to mcp-servers-for-revit backend commands.
 
     ENFORCED execution-safety backstop: deny-by-default. Only the allowlisted
     pipeline tools are dispatchable; there is NO passthrough of arbitrary tool
     names to the plugin, so send_code_to_revit can never be reached this way.
 
-    RevitWriteServer command signatures (our custom C# plugin on port 8080):
-      create_point_based_element  — typeId (int), x, y, z (double), levelId (int, opt)
-      set_element_parameter       — elementId (int), parameterName (str), value (any)
-      create_element_tag          — elementId (int), tagTypeId (int, opt)
+    Backend command contracts (verified against the C# command/handler/model sources):
+      create_point_based_element  — {"data":[PointElement]}        (mm units)
+      set_element_parameter       — {"elementId", "parameters":[{"name","value"}]}
+      tag_element                 — {"elementId","useLeader","offsetX","offsetY","tagTypeId"?}
     """
     assert_tool_allowed(tool)  # raises DisallowedToolError for anything off-allowlist
 
     if tool == "place_element":
         family_type = arguments.get("family_type", arguments.get("family_name", ""))
-        loc = arguments.get("location", {})
+        loc = arguments.get("location") or {}
         if not isinstance(loc, dict):
             loc = {}
 
-        # Resolve family name → typeId via get_available_family_types
-        type_id = arguments.get("typeId") or get_family_type_id(family_type)
+        # Resolve family name → typeId (and category). The backend derives the
+        # category from a valid typeId, so typeId alone is enough to place.
+        type_id = arguments.get("typeId")
+        category = arguments.get("category")
+        if type_id is None and family_type:
+            info = _resolve_family_type(family_type)
+            if info:
+                type_id = info.get("FamilyTypeId")
+                if not category and info.get("Category"):
+                    # FamilyTypeInfo.Category is a display name ("Doors"); the
+                    # backend wants a BuiltInCategory token ("OST_Doors").
+                    category = "OST_" + str(info["Category"]).replace(" ", "")
 
-        params: dict = {
-            "x": loc.get("x", 0.0),
-            "y": loc.get("y", 0.0),
-            "z": loc.get("z", 0.0),
+        element: dict = {
+            "locationPoint": {
+                "x": float(loc.get("x", 0.0)),
+                "y": float(loc.get("y", 0.0)),
+                "z": float(loc.get("z", 0.0)),
+            },
+            "baseLevel": float(arguments.get("baseLevel", 0.0)),
+            "baseOffset": float(arguments.get("baseOffset", 0.0)),
+            "height": float(arguments.get("height", 2100.0)),
+            "width": float(arguments.get("width", 900.0)),
         }
         if type_id is not None:
-            params["typeId"] = type_id
-        if arguments.get("levelId"):
-            params["levelId"] = arguments["levelId"]
+            element["typeId"] = int(type_id)
+        if category:
+            element["category"] = category
+        if arguments.get("hostWallId"):
+            element["hostWallId"] = int(arguments["hostWallId"])
 
-        return _call_plugin("create_point_based_element", params)
+        return _call_plugin("create_point_based_element", {"data": [element]})
 
     elif tool == "set_parameter":
         elem_id = arguments.get("element_id") or arguments.get("elementId") or 0
@@ -516,35 +401,63 @@ def _dispatch_tool(tool: str, arguments: dict) -> dict:
         value = arguments.get("value", "")
 
         return _call_plugin("set_element_parameter", {
-            "elementId":     int(elem_id),
-            "parameterName": param_name,
-            "value":         value,
+            "elementId": int(elem_id),
+            "parameters": [{"name": param_name, "value": value}],
         })
 
     elif tool == "create_annotation_tag":
         elem_id = arguments.get("element_id") or arguments.get("elementId") or 0
-        params: dict = {"elementId": int(elem_id)}
-        # tagTypeId is optional — our C# command auto-picks by element category
+        params: dict = {
+            "elementId": int(elem_id),
+            "useLeader": bool(arguments.get("useLeader", False)),
+            "offsetX": float(arguments.get("offsetX", 0.0)),
+            "offsetY": float(arguments.get("offsetY", 500.0)),
+        }
+        # tagTypeId is optional — the backend auto-picks a tag family by category.
         if arguments.get("tagTypeId"):
-            params["tagTypeId"] = arguments["tagTypeId"]
+            params["tagTypeId"] = int(arguments["tagTypeId"])
 
-        return _call_plugin("create_element_tag", params)
+        return _call_plugin("tag_element", params)
 
-    # Unreachable for permitted tools (all are handled above). Kept as a hard
-    # backstop: a permitted-but-unmapped tool fails loudly rather than being
-    # forwarded blindly to the plugin.
+    # Unreachable for permitted tools (all handled above). Hard backstop: a
+    # permitted-but-unmapped tool fails loudly rather than being forwarded blindly.
     assert_tool_allowed(tool)
     raise DisallowedToolError(f"Tool '{tool}' is permitted but has no dispatch mapping.")
 
 
+def _step_failed(result: dict) -> bool:
+    """A dispatched step failed if it returned a connection error or AIResult.Success == False."""
+    if not isinstance(result, dict):
+        return True
+    if result.get("error"):
+        return True
+    if result.get("Success") is False:
+        return True
+    return False
+
+
 def _extract_element_id(result: dict) -> int | None:
     """
-    Extract the placed element's ID from a create_point_based_element result.
+    Extract a placed element's ID from a create_point_based_element result.
 
-    RevitWriteServer returns: {"elementId": 123, "x": 0.0, "y": 0.0, "z": 0.0}
+    Backend returns AIResult<List<int>>: {"Success":true,"Response":[123]}.
+    Also tolerates flat {"elementId":123} shapes for forward/backward compat.
     """
     if not isinstance(result, dict):
         return None
+
+    resp = result.get("Response")
+    if isinstance(resp, list) and resp:
+        try:
+            return int(resp[0])
+        except (ValueError, TypeError):
+            pass
+    if isinstance(resp, (int, str)):
+        try:
+            return int(resp)
+        except (ValueError, TypeError):
+            pass
+
     for key in ("elementId", "element_id", "ElementId", "id"):
         val = result.get(key)
         if val is not None:
@@ -552,7 +465,7 @@ def _extract_element_id(result: dict) -> int | None:
                 return int(val)
             except (ValueError, TypeError):
                 pass
-    # Unwrap one level of nesting (some older responses wrap in "result": {...})
+
     inner = result.get("result")
     if isinstance(inner, dict):
         return _extract_element_id(inner)
@@ -590,7 +503,7 @@ if __name__ == "__main__":
 
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    print("RevitWriteServer connection test")
+    print("mcp-servers-for-revit connection test")
     print(f"Connecting to {REVIT_PLUGIN_HOST}:{REVIT_PLUGIN_PORT} …")
     print()
 
@@ -601,8 +514,8 @@ if __name__ == "__main__":
         print(f"  FAIL: {result['error']}")
         print()
         print("Make sure:")
-        print("  1. Revit 2027 is open")
-        print("  2. RevitWriteServer.dll loaded (check Revit journal for 'TCP server started')")
+        print("  1. Revit 2025 or 2026 is open")
+        print("  2. The plugin loaded (check Revit journal for 'TCP server started')")
         print("  3. Nothing else is using port 8080")
         sys.exit(1)
     print(f"  OK  → {result}")
@@ -611,25 +524,27 @@ if __name__ == "__main__":
     # 2. get_current_view_info ─ reads active view
     print("► get_current_view_info")
     result = _call_plugin("get_current_view_info", {})
-    if "error" in result:
+    if isinstance(result, dict) and "error" in result:
         print(f"  FAIL: {result['error']}")
     else:
-        view = result.get("view", result)
-        print(f"  OK  → view='{view.get('name', '?')}' type={view.get('type', '?')}")
+        view = result.get("Response", result) if isinstance(result, dict) else result
+        if isinstance(view, dict):
+            print(f"  OK  → view='{view.get('name', view.get('Name', '?'))}'")
+        else:
+            print(f"  OK  → {view}")
     print()
 
-    # 3. get_available_family_types ─ lists loaded families
+    # 3. get_available_family_types ─ lists loaded families (bare list)
     print("► get_available_family_types (first 3)")
-    result = _call_plugin("get_available_family_types", {})
-    if "error" in result:
+    result = _call_plugin("get_available_family_types", {"limit": 25})
+    if isinstance(result, dict) and "error" in result:
         print(f"  FAIL: {result['error']}")
     else:
-        types = result.get("types", result) if isinstance(result, dict) else result
+        types = result if isinstance(result, list) else result.get("Response", [])
         for t in (types or [])[:3]:
-            print(f"  • id={t.get('id', t.get('typeId', '?'))}  {t.get('name', '?')}")
-        total = len(types or [])
-        if total > 3:
-            print(f"  … and {total - 3} more")
+            print(f"  • id={t.get('FamilyTypeId', '?')}  {t.get('FamilyName', '?')} : {t.get('TypeName', '?')}")
+        if len(types or []) > 3:
+            print(f"  … and {len(types) - 3} more")
     print()
 
-    print("All checks passed. RevitWriteServer is running correctly.")
+    print("All checks passed. The mcp-servers-for-revit plugin is reachable.")

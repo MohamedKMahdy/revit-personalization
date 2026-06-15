@@ -273,34 +273,44 @@ async def api_execute(body: ExecuteIn = ExecuteIn()):
     return result
 
 
+def _operate_last_element(action: str) -> dict:
+    """
+    Run an operate_element action on the last placed element and normalize the
+    AIResult envelope ({Success, Message}) into the {error}/success shape the UI expects.
+
+    Backend contract: operate_element ← {"data": {"elementIds": [...], "action": ...}}.
+    Valid actions: Select, Isolate, Hide, TempHide, Unhide, ResetIsolate, etc.
+    """
+    if not _last_element_id:
+        return {"error": f"No element to {action.lower()} — run the shortcut first", "success": False}
+    from mcp_server.revit_bridge import _call_plugin
+    result = _call_plugin("operate_element", {
+        "data": {"elementIds": [_last_element_id], "action": action},
+    })
+    if isinstance(result, dict) and result.get("Success") is False:
+        return {"error": result.get("Message", f"{action} failed"),
+                "success": False, "elementId": _last_element_id}
+    body = result if isinstance(result, dict) else {"result": result}
+    return {**body, "elementId": _last_element_id}
+
+
 @app.post("/api/isolate")
 async def api_isolate():
     """Isolate the last placed element in the current Revit view."""
-    if not _last_element_id:
-        return {"error": "No element to isolate — run the shortcut first", "success": False}
-    from mcp_server.revit_bridge import _call_plugin
-    result = _call_plugin("isolate_element", {"elementId": _last_element_id})
-    return {**result, "elementId": _last_element_id}
+    return _operate_last_element("Isolate")
 
 
 @app.post("/api/zoom")
 async def api_zoom():
-    """Zoom the active view to the last placed element."""
-    if not _last_element_id:
-        return {"error": "No element to zoom to — run the shortcut first", "success": False}
-    from mcp_server.revit_bridge import _call_plugin
-    result = _call_plugin("zoom_to_element", {"elementId": _last_element_id})
-    return {**result, "elementId": _last_element_id}
+    """The backend has no 'zoom' action; 'Select' selects the element so the user
+    can locate it (closest available behaviour)."""
+    return _operate_last_element("Select")
 
 
 @app.post("/api/select")
 async def api_select():
     """Select the last placed element in Revit."""
-    if not _last_element_id:
-        return {"error": "No element to select — run the shortcut first", "success": False}
-    from mcp_server.revit_bridge import _call_plugin
-    result = _call_plugin("select_element", {"elementId": _last_element_id})
-    return {**result, "elementId": _last_element_id}
+    return _operate_last_element("Select")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

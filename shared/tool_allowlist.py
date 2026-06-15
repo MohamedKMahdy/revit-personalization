@@ -23,7 +23,7 @@ from __future__ import annotations
 # a bounded, named Tier 1–3 backend operation in revit_bridge._dispatch_tool:
 #   place_element         -> create_point_based_element        (Tier 1)
 #   set_parameter         -> set_element_parameter             (Tier 1)
-#   create_annotation_tag -> create_element_tag / tag_element  (Tier 1)
+#   create_annotation_tag -> tag_element                       (Tier 1)
 PERMITTED_PIPELINE_TOOLS: frozenset[str] = frozenset({
     "place_element",
     "set_parameter",
