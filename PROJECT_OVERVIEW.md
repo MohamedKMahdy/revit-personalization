@@ -36,13 +36,15 @@ The thesis contribution has three parts:
 
 | Repo | Local path | Purpose | Git |
 |---|---|---|---|
-| **revit-personalization** | `C:\Users\DE1E7A\revit-personalization` | The thesis system: C# logger, Python detector, MCP server, orchestrator, chatbot | git repo; detector work currently uncommitted (last commit `13cc5ee`) |
-| **mcp-servers-for-revit** | `C:\Users\DE1E7A\mcp-servers-for-revit` | Open-source Revit MCP execution backend, extended with 10 new tools | branch `feature/tier1-3-tools` on top of upstream `86cf705`; not yet pushed to a fork |
+| **revit-personalization** | `C:\Users\DE1E7A\revit-personalization` | The thesis system: Python detector, MCP server, orchestrator, chatbot (logging is now sourced from generalBIMlog; the in-repo `revit_addin/` plugin is retired) | git repo on `main` |
+| **generalBIMlog** | `C:\Users\DE1E7A\generalBIMlog` | The C# `RevitLogger` — **now the pipeline's log source.** Writes a ProjectSchema JSON per project (CREATED/REVISED/DELETED element-event model) | git repo on `main` |
+| **mcp-servers-for-revit** | `C:\Users\DE1E7A\mcp-servers-for-revit` | Open-source Revit MCP execution backend, extended with 10 new tools | branch `feature/tier1-3-tools` pushed to the `myfork` remote (on top of upstream `86cf705`) |
 
 ### Data / history file locations (outside the repos)
 | What | Path |
 |---|---|
-| **Action logs** (C# logger output, detector input) | `C:\Users\DE1E7A\AppData\Local\RevitPersonalization\logs\session_*.jsonl` |
+| **Action logs** — PRIMARY (generalBIMlog output) | `%APPDATA%\Autodesk\Revit\Addins\<ver>\RevitLogger\Logs\eventlog\{projectGUID}.json` |
+| Action logs — LEGACY (retired `revit_addin/` plugin) | `%LOCALAPPDATA%\RevitPersonalization\logs\session_*.jsonl` |
 | Add-in diagnostic log | `…\RevitPersonalization\logs\_diag.txt` |
 | **Shortcuts** (generated configs) | `C:\Users\DE1E7A\AppData\Local\RevitPersonalization\shortcuts\` |
 | Env / API key | `…\RevitPersonalization\.env` (gitignored) and project `.env` |
@@ -56,13 +58,12 @@ The thesis contribution has three parts:
 ## 3. End-to-end architecture
 
 ```
-Revit 2025/2026/2027
+Revit 2025/2026
   │
-  ├── C# Add-in: RevitLogger  (OBSERVER ONLY — never writes the model)
-  │     • subscribes to Application.DocumentChanged
-  │     • emits one ActionRecord per action → session_*.jsonl
-  │     • RoutineDetector (C#) fires a live in-session suggestion
-  │     • NotificationUI.xaml → "Learn this routine?" WPF prompt
+  ├── C# Add-in: generalBIMlog RevitLogger  (OBSERVER ONLY — never writes the model)
+  │     • subscribes to DocumentChanged; logs CREATED/REVISED/DELETED element events
+  │     • writes a ProjectSchema JSON per project → …\RevitLogger\Logs\eventlog\{guid}.json
+  │     • (the retired in-repo revit_addin/ plugin previously wrote session_*.jsonl)
   │
   └── C# Add-in/Plugin: mcp-servers-for-revit plugin  (EXECUTOR)
         • TCP/JSON-RPC server on localhost:8080
@@ -73,8 +74,9 @@ Local machine (Python)
   ├── detector/                 ← routine detection gate (v0.1 baseline + v0.2 default)
   │
   ├── mcp_server/  (FastMCP)    ← exposes logs as resources + analysis tools
-  │     • resource logs://candidate_routines
-  │     • resource logs://routine/{id}/examples
+  │     • generalbimlog_reader.py → converts generalBIMlog ProjectSchema → ActionRecords
+  │     • log_reader.py → load_real_action_records() runs the detector over them
+  │     • resources logs://candidate_routines, logs://routine/{id}/examples
   │     • tools analyze_pattern, generate_command, execute_revit_command
   │     • revit_bridge.py → bridges to mcp-servers-for-revit (localhost:8080)
   │

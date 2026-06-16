@@ -1,4 +1,9 @@
-# revit_addin — Personalization Revit Add-in (observer)
+# revit_addin — Personalization Revit Add-in (observer) — RETIRED
+
+> **RETIRED (2026-06-16):** the pipeline now sources its logs from the
+> **generalBIMlog `RevitLogger`** instead of this plugin. `mcp_server/log_reader.py`
+> reads generalBIMlog output via `mcp_server/generalbimlog_reader.py`; this add-in
+> is no longer built, deployed, or read. Kept for reference/history only.
 
 The Revit-side client of the personalization system. It is **observer-only**: it
 watches the user's authoring actions and writes structured logs — it **never writes

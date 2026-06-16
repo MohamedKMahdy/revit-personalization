@@ -291,15 +291,11 @@ REAL_FIELDS = ["detector", "routine_id", "label", "support", "mean_intra_similar
 
 
 def run_reallogs() -> list[dict]:
-    from mcp_server.log_reader import LOG_DIR, _load_action_records
+    # Real source is now generalBIMlog RevitLogger output (the retired revit_addin/
+    # JSONL plugin is no longer read). See mcp_server.generalbimlog_reader.
+    from mcp_server.log_reader import load_real_action_records
 
-    records = []
-    if LOG_DIR.exists():
-        for f in sorted(LOG_DIR.glob("session_*.jsonl")):
-            try:
-                records.extend(_load_action_records(f))
-            except Exception as e:
-                print(f"  [reallogs] skip {f.name}: {e}", file=sys.stderr)
+    records = load_real_action_records()
 
     rows: list[dict] = []
     if not records:

@@ -1,13 +1,19 @@
 """
-JSONL log reader and routine detector for the RevitLogger C# add-in output.
+Routine detector entry point. Reads real authoring logs as an ActionRecord
+stream and runs the selected detector over them.
 
-The C# add-in writes one JSON object per line to
-  %LOCALAPPDATA%\\RevitPersonalization\\logs\\session_<date>_<docHash>.jsonl
+PRIMARY SOURCE: generalBIMlog RevitLogger output (a ProjectSchema JSON per
+project), converted to ActionRecords by `generalbimlog_reader` — see
+load_real_action_records().
 
-Each file has three record types:
+LEGACY (retired add-in): the old in-repo `revit_addin/` plugin wrote one JSON
+object per line to %LOCALAPPDATA%\\RevitPersonalization\\logs\\session_*.jsonl,
+with three record types:
   • record_type == "session_start"  — session metadata (SessionInfo)
   • (no record_type field)          — ActionRecord (Place / SetParam / Tag)
   • record_type == "session_end"    — closing marker
+That reader (_load_action_records / LOG_DIR) is kept for backward compatibility
+but is no longer the default source.
 
 Routine detection follows the episode-grouping approach from:
   Jang & Lee (2023) arXiv:2305.18032 — enhanced BIM logging for reproducibility
@@ -33,7 +39,8 @@ from typing import Iterator
 from shared.schemas import ActionRecord, CandidateRoutine, RoutineExample
 from detector import Detector, DetectorConfig, make_detector
 
-# Primary log directory written by the C# add-in
+# Legacy log directory written by the retired revit_addin/ plugin (JSONL).
+# Kept for backward compatibility; generalBIMlog is now the default source.
 LOG_DIR = Path(os.environ.get(
     "REVIT_PERSONALIZATION_LOG_DIR",
     Path.home() / "AppData" / "Local" / "RevitPersonalization" / "logs",
@@ -139,6 +146,21 @@ def _resolve_detector(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def load_real_action_records() -> list[ActionRecord]:
+    """
+    Real authoring logs as one ActionRecord stream.
+
+    PRIMARY: generalBIMlog RevitLogger output, converted by generalbimlog_reader.
+    Set GENERALBIMLOG_DIR to point at a custom logs folder; otherwise every
+    installed Revit version's eventlog dir is read.
+
+    The legacy revit_addin/ JSONL format (_load_action_records / LOG_DIR) is no
+    longer read by default — that add-in is retired.
+    """
+    from mcp_server.generalbimlog_reader import load_action_records
+    return load_action_records()
+
+
 def list_candidate_routines(
     include_synthetic: bool = True,
     min_repeats: int | None = None,
@@ -162,23 +184,16 @@ def list_candidate_routines(
     det = _resolve_detector(detector, config, min_repeats)
     routines: dict[str, CandidateRoutine] = {}
 
-    # ── Real JSONL logs: gather all records, detect once ──
-    if LOG_DIR.exists():
-        all_records: list[ActionRecord] = []
-        for jsonl_file in sorted(LOG_DIR.glob("session_*.jsonl")):
-            try:
-                all_records.extend(_load_action_records(jsonl_file))
-            except Exception as e:
-                import sys
-                print(f"  [log_reader] error reading {jsonl_file.name}: {e}", file=sys.stderr)
-        if all_records:
-            try:
-                for r in det.detect(all_records, session_id="logs"):
-                    if r.id not in routines or r.support > routines[r.id].support:
-                        routines[r.id] = r
-            except Exception as e:
-                import sys
-                print(f"  [log_reader] detector error: {e}", file=sys.stderr)
+    # ── Real logs (generalBIMlog RevitLogger output): gather records, detect once ──
+    all_records = load_real_action_records()
+    if all_records:
+        try:
+            for r in det.detect(all_records, session_id="logs"):
+                if r.id not in routines or r.support > routines[r.id].support:
+                    routines[r.id] = r
+        except Exception as e:
+            import sys
+            print(f"  [log_reader] detector error: {e}", file=sys.stderr)
 
     # ── Synthetic test data (.json) ──
     if include_synthetic and SYNTHETIC_DIR.exists():
