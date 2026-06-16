@@ -381,7 +381,7 @@ function buildArchDiagram() {
       margins: { top: 80, bottom: 80, left: 160, right: 160 },
       children: [
         boxPara("Multi-Agent Orchestrator  (orchestrator/agents.py)", true, 19, CLR.agentOrange),
-        boxPara("Pattern Agent: claude-opus-4-7 + extended thinking  -->  Extracts Motif JSON from k examples", false, 17, CLR.textDark),
+        boxPara("Pattern Agent: claude-opus-4-8 + extended thinking  -->  Extracts Motif JSON from k examples", false, 17, CLR.textDark),
         boxPara("Macro Agent:   claude-sonnet-4-6                    -->  Converts Motif to MCP tool call sequence", false, 17, CLR.textDark),
       ],
     })],
@@ -607,7 +607,7 @@ children.push(
   ...spacer(1),
   dataFlowTable("Phase 3: Extraction (orchestrator or Autodesk Assistant)", CLR.agentOrange, [
     [{ text: "k examples are fetched from " }, { text: "log_reader.get_routine_examples(id, k)", font: "Courier New" }, { text: ". Each example is a list of ActionRecord dicts for one element episode." }],
-    [{ text: "The Pattern Agent (claude-opus-4-7 with extended thinking, 8000-token budget) receives all k examples. It identifies the invariant action sequence and classifies each SetParam step as constant (same value in every example) or variable (value differs across examples)." }],
+    [{ text: "The Pattern Agent (claude-opus-4-8 with extended thinking) receives all k examples. It identifies the invariant action sequence and classifies each SetParam step as constant (same value in every example) or variable (value differs across examples)." }],
     [{ text: "The Pattern Agent returns a Motif JSON object containing: name, description, ordered steps (action_type, family_name, param_name, param_value, param_value_type, tag_family_name), preconditions, and parameters_to_prompt." }],
     [{ text: "The Macro Agent (claude-sonnet-4-6) receives the Motif and translates it into an ordered list of MCP tool calls: place_element, set_parameter (with constant values or {{ParamName}} placeholders), create_annotation_tag." }],
     [{ text: "The user reviews a dry-run preview of the tool call sequence and confirms. A " }, { text: "ShortcutConfig.json", font: "Courier New" }, { text: " is saved to " }, { text: "shortcuts/<id>.json", font: "Courier New" }, { text: "." }],
@@ -760,7 +760,7 @@ children.push(
   simpleTable(
     ["File", "Model", "Role"],
     [
-      ["pattern_agent.py", "claude-opus-4-7 + extended thinking (8000-token budget)", "Receives k RoutineExample dicts. Identifies invariant action sequence. Classifies each SetParam as constant or variable. Returns Motif JSON with steps, preconditions, and parameters_to_prompt."],
+      ["pattern_agent.py", "claude-opus-4-8 + extended thinking", "Receives k RoutineExample dicts. Identifies invariant action sequence. Classifies each SetParam as constant or variable. Returns Motif JSON with steps, preconditions, and parameters_to_prompt."],
       ["macro_agent.py", "claude-sonnet-4-6", "Receives Motif JSON. Translates each step to a Revit MCP tool call (place_element, set_parameter, create_annotation_tag) with appropriate argument values or runtime placeholders."],
       ["agents.py", "CLI coordinator", "Fetches routine examples, calls both agents in sequence, displays dry-run preview, saves ShortcutConfig on user confirmation. Supports --list, --execute, --auto-confirm, --params flags."],
     ],
@@ -864,7 +864,7 @@ children.push(
       ["File-based IPC (ipc/ directory)", "No custom HTTP server or named-pipe infrastructure required in the C# add-in. FileSystemWatcher is built into .NET. The shared directory provides a natural audit trail. Survives process restarts on either side."],
       ["FastMCP (Python)", "Single-file declarative MCP server definition. Compatible with MCP Inspector, Claude Desktop, and the Autodesk Assistant registration mechanism. The mcp Python library handles protocol framing."],
       ["Pydantic v2 (Python)", "Strong runtime validation of the schema contract between components. model_dump() and model_validate_json() provide clean serialisation without boilerplate. Extra field tolerance (extra=ignore) ensures forward compatibility."],
-      ["claude-opus-4-7 + extended thinking", "Extended thinking provides the deepest available reasoning for the constant/variable parameter classification task. Classifying a parameter as constant when it is actually variable would produce an incorrect shortcut that silently overwrites user intent. Opus with thinking minimises this risk."],
+      ["claude-opus-4-8 + extended thinking", "Extended thinking provides the deepest available reasoning for the constant/variable parameter classification task. Classifying a parameter as constant when it is actually variable would produce an incorrect shortcut that silently overwrites user intent. Opus with thinking minimises this risk."],
       ["claude-sonnet-4-6 (Macro Agent)", "The Macro Agent's task (translating a structured Motif JSON to a structured tool call sequence) is a deterministic format conversion, not a reasoning task. Sonnet provides fast, cost-effective structured output generation."],
       ["No cloud log upload", "Thesis §3.1 gap 3 explicitly identifies privacy and IP constraints as a barrier to BIM log analysis. The system was designed from the start to keep all log data local: only action type strings and parameter name/value pairs are sent to the Claude API, never model geometry."],
     ],

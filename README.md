@@ -91,7 +91,7 @@ revit-personalization/
 │
 ├── orchestrator/
 │   ├── agents.py             CLI orchestrator — coordinates both agents
-│   ├── pattern_agent.py      claude-opus-4-7 + extended thinking → Motif
+│   ├── pattern_agent.py      claude-opus-4-8 + extended thinking → Motif
 │   └── macro_agent.py        claude-sonnet-4-6 → MCP tool call sequence
 │
 ├── eval/

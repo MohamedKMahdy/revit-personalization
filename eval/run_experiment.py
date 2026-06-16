@@ -6,7 +6,7 @@ Implements two evaluation dimensions from thesis §4.4:
 SAMPLE EFFICIENCY (§4.4.1)
   For each candidate routine x each k in K_VALUES x reps repetitions:
     1. Sample k examples
-    2. Run the Pattern Agent (claude-opus-4-7 + adaptive thinking)
+    2. Run the Pattern Agent (claude-opus-4-8 + adaptive thinking)
     3. Score the extracted motif against the ground-truth episode structure:
          step_match_accuracy  — fraction of GT steps correctly predicted
          param_coverage       — fraction of SetParam steps with correct param_name

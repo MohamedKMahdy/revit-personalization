@@ -358,18 +358,22 @@ npm install && npm run build && npm start
 ## 11. Status & next steps
 
 **Done**
-- v0.2 detector + v0.1 baseline behind one interface; 12 tests pass.
+- v0.2 detector + v0.1 and v1.5 baselines behind one interface; 12 tests pass.
 - `list_candidate_routines()` defaults to v0.2; v0.1 selectable.
 - `CandidateRoutine.support` added; confidence semantics documented.
-- mcp-servers-for-revit: 10 tools + Revit 2027 + Test Tools panel (branch
-  `feature/tier1-3-tools`, committed locally).
+- v0.2 detector work committed to the revit-personalization repo.
+- `eval/detection_eval.py` (committed `03107d6`) — per-detector routine
+  precision/recall/F1 at purity 0.80/0.50, pairwise P/R/F1 + Adjusted Rand Index,
+  a v0.2 theta sweep, a determinism check, and a descriptive real-log mode.
+  Result: v0.2 perfect on the labeled session (F1/ARI 1.0); v1.5 is perfect on
+  synthetic but over-fragments on real logs — the generalization evidence.
+- Pattern Agent default model aligned to `claude-opus-4-8` (was `claude-opus-4-7`;
+  see §9). Macro Agent stays `claude-sonnet-4-6`.
+- mcp-servers-for-revit: 10 tools + Test Tools panel on `feature/tier1-3-tools`,
+  pushed to the `myfork` remote (`origin` = upstream). R27 build config was
+  added then dropped — R20–R26 supported.
 
 **Open / next**
-- [ ] Build `eval/detection_eval.py` — detection precision/recall/F1 per detector
-      over a labeled synthetic session (the v0.1-vs-v0.2 comparison).
-- [ ] Commit the v0.2 detector work to the revit-personalization repo.
-- [ ] Fork mcp-servers-for-revit and push `feature/tier1-3-tools` (upstream
-      remote currently rejects the push).
-- [ ] Deploy updated hosted-family placement + verify in Revit.
+- [ ] Deploy updated hosted-family placement + verify in Revit (needs Revit open).
 - [ ] RevitWriteServer: implement Isolate/Zoom/Select commands (or fully migrate
       to mcp-servers-for-revit's `operate_element`).

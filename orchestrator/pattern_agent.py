@@ -1,7 +1,7 @@
 """
 Pattern Agent — extracts a generalized routine motif from k example episodes.
 
-Model:  claude-opus-4-7  (extended thinking for deep parameter analysis)
+Model:  claude-opus-4-8  (extended thinking for deep parameter analysis)
 Output: Motif JSON matching shared.schemas.Motif / MotifStep field names.
 
 Jang & Lee (2023) framing: the motif captures the invariant action sequence and
@@ -14,7 +14,7 @@ import json
 import os
 import anthropic
 
-MODEL = os.environ.get("PATTERN_AGENT_MODEL", "claude-opus-4-7")
+MODEL = os.environ.get("PATTERN_AGENT_MODEL", "claude-opus-4-8")
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """\

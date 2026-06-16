@@ -78,7 +78,7 @@ Revit 2027 ships with two AI-related components that are relevant to this thesis
 │                        Orchestrator (CLI / eval)                           │
 │                        orchestrator/agents.py                              │
 │                                                                            │
-│  Pattern Agent  (claude-opus-4-7 + extended thinking)                     │
+│  Pattern Agent  (claude-opus-4-8 + extended thinking)                     │
 │    Input:  k example episodes                                              │
 │    Output: Motif JSON (invariant steps + constant/variable param rules)    │
 │                                                                            │
@@ -134,7 +134,7 @@ Via Autodesk Assistant chat (after server registration):
   Assistant calls: generate_command(motif=..., name="Place Door + Tag")
 
 In both cases:
-  → Pattern Agent (claude-opus-4-7 + extended thinking)
+  → Pattern Agent (claude-opus-4-8 + extended thinking)
        analyses k examples → extracts Motif
   → Macro Agent (claude-sonnet-4-6)
        converts Motif → tool call sequence
@@ -255,7 +255,7 @@ Our C# add-in executes shortcuts **deterministically** from a stored `ShortcutCo
 
 | File | Model | Role |
 |------|-------|------|
-| `pattern_agent.py` | `claude-opus-4-7` + extended thinking | Extracts Motif from k examples |
+| `pattern_agent.py` | `claude-opus-4-8` + extended thinking | Extracts Motif from k examples |
 | `macro_agent.py` | `claude-sonnet-4-6` | Converts Motif to tool call sequence |
 | `agents.py` | — | CLI coordinator; also callable from MCP server tools |
 
@@ -304,7 +304,7 @@ The C# add-in uses `FileSystemWatcher` on the `ipc/` directory. Python polls for
 | **Autodesk Public MCP (read-only)** | Used only for model context queries — the one thing it's good at |
 | **C# add-in for execution** | Deterministic, local, no Autodesk cloud dependency, full Revit API access |
 | **FastMCP registered with Autodesk Assistant** | Gives the system a natural language interface inside Revit without building a separate chat UI |
-| **claude-opus-4-7 + extended thinking** | Highest reasoning for constant/variable parameter classification |
+| **claude-opus-4-8 + extended thinking** | Highest reasoning for constant/variable parameter classification |
 | **claude-sonnet-4-6** | Structured config generation; fast and cost-effective |
 | **JSONL** | Append-only, line-by-line parseable, robust to Revit crashes |
 | **No cloud data upload** | All logs, shortcuts, and API calls use only element IDs and parameter names |

@@ -3,7 +3,7 @@ BIM Personalization Orchestrator — main CLI entry point.
 
 Pipeline (updated architecture §4.1–4.2):
   1. Fetch k examples of a candidate routine from real/synthetic logs
-  2. Pattern Agent  (claude-opus-4-7 + adaptive thinking)
+  2. Pattern Agent  (claude-opus-4-8 + adaptive thinking)
        → analyses k examples → extracts a generalised Motif JSON
   3. Macro Agent (claude-sonnet-4-6)
        → queries live model state via model:query_state (grounding)
@@ -25,7 +25,7 @@ Usage:
 
 Environment variables:
     ANTHROPIC_API_KEY         — required; your Anthropic API key
-    PATTERN_AGENT_MODEL       — override Pattern Agent model (default: claude-opus-4-7)
+    PATTERN_AGENT_MODEL       — override Pattern Agent model (default: claude-opus-4-8)
     MACRO_AGENT_MODEL         — override Macro Agent model (default: claude-sonnet-4-6)
     MCP_REVIT_BACKEND_URL     — mcp-servers-for-revit URL (default: http://localhost:3001)
 """
