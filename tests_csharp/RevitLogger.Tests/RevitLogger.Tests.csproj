@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unit tests for the RevitAPI-free parts of the add-in: the placement-type feed gate
+    (PlacementClassifier) and the routine detector (RoutineDetector).
+
+    RevitAPI.dll cannot load outside Revit (mixed-mode, needs the full runtime), so we do
+    NOT reference it. Instead we link the three production source files that have no
+    RevitAPI dependency, plus a tiny App.DiagLog stub (TestApp.cs). This keeps the test
+    assembly pure managed code that runs under `dotnet test` on any machine.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <!-- Production sources under test (all RevitAPI-free). Linked, not referenced. -->
+  <ItemGroup>
+    <Compile Include="..\..\revit_addin\PlacementClassifier.cs" Link="src\PlacementClassifier.cs" />
+    <Compile Include="..\..\revit_addin\RoutineDetector.cs"     Link="src\RoutineDetector.cs" />
+    <Compile Include="..\..\revit_addin\ActionRecord.cs"        Link="src\ActionRecord.cs" />
+  </ItemGroup>
+
+</Project>

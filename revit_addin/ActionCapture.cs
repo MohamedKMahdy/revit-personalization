@@ -59,9 +59,11 @@ public class ActionCapture : IDisposable
     // We defer until Modified fires after the user exits the stair editor.
     private readonly HashSet<long> _stairPendingIds = new();
 
-    // FamilyInstance categories relevant to CEI (Custom Element Instantiation) detection.
-    // These are the element types that participate in Place → SetParam → Tag episodes.
-    // Non-FamilyInstance element types (Walls, Floors, etc.) are handled separately.
+    // Legacy authoring categories. These are NO LONGER the detector feed gate — feeding
+    // is now decided by family placement type (PlacementClassifier, point-based only).
+    // This set is retained purely to KEEP AUDIT LOGGING UNCHANGED: any instance in one of
+    // these categories is still logged even if its placement type is not point-based
+    // (e.g. Structural Framing beams are curve-based — logged for audit, but not fed).
     private static readonly HashSet<string> AuthoringCategories =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -150,12 +152,19 @@ public class ActionCapture : IDisposable
             return;
         }
 
-        // ── FamilyInstance (Doors, Windows, Furniture, …) — CEI tracking ──
-        if (el is FamilyInstance fi && IsAuthoring(fi))
+        // ── FamilyInstance — CEI tracking ─────────────────────────────────
+        // Feed the detector for any POINT-BASED family instance (placement type),
+        // regardless of category. Still LOG legacy authoring categories even when
+        // not point-based (audit logging unchanged), but don't feed those.
+        if (el is FamilyInstance fi)
         {
-            EmitPlace(fi, ctx);
-            _snapshot.Snapshot(fi);
-            return;
+            var pointBased = IsPointBasedInstance(fi);
+            if (pointBased || IsAuthoring(fi))
+            {
+                EmitPlace(fi, ctx, feedDetector: pointBased);
+                _snapshot.Snapshot(fi);
+            }
+            return;   // family instances are fully handled here
         }
 
         // ── Walls ─────────────────────────────────────────────────────────
@@ -213,10 +222,15 @@ public class ActionCapture : IDisposable
         }
 
         // ── FamilyInstance: detect SetParam changes ───────────────────────
-        if (el is FamilyInstance fi && IsAuthoring(fi))
+        // Feed point-based instances; still log legacy categories (audit unchanged).
+        if (el is FamilyInstance fi)
         {
-            foreach (var change in _snapshot.GetChanges(fi))
-                EmitSetParam(fi, change, ctx);
+            var pointBased = IsPointBasedInstance(fi);
+            if (pointBased || IsAuthoring(fi))
+            {
+                foreach (var change in _snapshot.GetChanges(fi))
+                    EmitSetParam(fi, change, ctx, feedDetector: pointBased);
+            }
             return;
         }
 
@@ -245,7 +259,7 @@ public class ActionCapture : IDisposable
 
     // ── Record emitters ───────────────────────────────────────────────────
 
-    private void EmitPlace(FamilyInstance fi, RecordContext ctx)
+    private void EmitPlace(FamilyInstance fi, RecordContext ctx, bool feedDetector)
     {
         var r = BaseRecord("Place", OperationClass.Model, fi, ctx);
 
@@ -267,10 +281,10 @@ public class ActionCapture : IDisposable
         _elemInfoCache[fi.Id.Value] = (r.ElementCategory, r.FamilyName, r.TypeName);
 
         _writer.Enqueue(r);
-        _detector?.Feed(r);   // real-time CEI episode tracking
+        if (feedDetector) _detector?.Feed(r);   // real-time CEI episode tracking (point-based only)
     }
 
-    private void EmitSetParam(FamilyInstance fi, ParamChange change, RecordContext ctx)
+    private void EmitSetParam(FamilyInstance fi, ParamChange change, RecordContext ctx, bool feedDetector)
     {
         var r = BaseRecord("SetParam", OperationClass.Parameter, fi, ctx);
         r.ParamName        = change.Name;
@@ -278,7 +292,7 @@ public class ActionCapture : IDisposable
         r.ParamValueBefore = change.Before;
         r.ParamValueAfter  = change.After;
         _writer.Enqueue(r);
-        _detector?.Feed(r);   // real-time CEI episode tracking
+        if (feedDetector) _detector?.Feed(r);   // real-time CEI episode tracking (point-based only)
     }
 
     /// <summary>
@@ -496,8 +510,22 @@ public class ActionCapture : IDisposable
         ViewType        = ctx.ViewType,
     };
 
+    /// <summary>Legacy authoring-category membership — now used only to KEEP these
+    /// categories logged for audit, not to gate detector feeding.</summary>
     private static bool IsAuthoring(FamilyInstance fi)
         => AuthoringCategories.Contains(fi.Category?.Name ?? "");
+
+    /// <summary>
+    /// True when the instance's family placement type is point-based — the feed gate.
+    /// Reads Autodesk.Revit.DB.FamilyPlacementType and delegates the (pure, testable)
+    /// decision to PlacementClassifier.
+    /// </summary>
+    private static bool IsPointBasedInstance(FamilyInstance fi)
+        => PlacementClassifier.IsPointBased(PlacementName(fi));
+
+    /// <summary>Placement type member name, or "" if the family can't be resolved.</summary>
+    private static string PlacementName(FamilyInstance fi)
+        => fi.Symbol?.Family is { } fam ? fam.FamilyPlacementType.ToString() : "";
 
     private static string LevelOf(Element el)
     {
