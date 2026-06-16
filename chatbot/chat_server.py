@@ -714,7 +714,16 @@ _SAMPLE_PATTERN = {
 if __name__ == "__main__":
     import argparse
 
+    # Under pythonw.exe (no console) sys.stdout/stderr are None. Both our own prints AND
+    # uvicorn's log formatter (sys.stdout.isatty()) dereference them, which would crash the
+    # server before it ever binds the port. Give them a real devnull sink so every
+    # downstream stdout/stderr use is safe, then normalise encoding for the console case.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description="BIM Pattern Chatbot Server")
     parser.add_argument("--port",    type=int, default=PORT,  help="Port (default 5000)")

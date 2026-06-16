@@ -34,6 +34,9 @@ public class App : IExternalApplication
     private readonly Dictionary<string, (ActionCapture Capture, LogWriter Writer, RoutineDetector Detector)>
         _sessions = new();
 
+    // The single dockable-pane content instance, created at startup and reused.
+    internal static AssistantPane? AssistantPaneInstance { get; private set; }
+
     // ── IExternalApplication ──────────────────────────────────────────────────
 
     public Result OnStartup(UIControlledApplication application)
@@ -51,6 +54,7 @@ public class App : IExternalApplication
         application.ViewActivated += OnViewActivated;
 
         CreateRibbonPanel(application);
+        RegisterAssistantPane(application);
 
         DiagLog("OnStartup: event subscriptions registered");
         return Result.Succeeded;
@@ -77,6 +81,9 @@ public class App : IExternalApplication
             session.Writer.Flush();
         }
         _sessions.Clear();
+
+        AssistantPaneInstance?.DisposeWebView();
+        ChatServer.Stop();   // kill the chatbot server this session launched
 
         return Result.Succeeded;
     }
@@ -263,7 +270,9 @@ public class App : IExternalApplication
                 Assembly.GetExecutingAssembly().Location,
                 "RevitLogger.OpenAssistantCommand")
             {
-                ToolTip = "Start the BIM Personalization chat assistant and open it in the browser.",
+                ToolTip = "Open the embedded BIM Personalization chat assistant in a dockable pane.",
+                // Keep the button enabled with no document open (Revit Home screen).
+                AvailabilityClassName = "RevitLogger.AssistantAvailability",
             };
 
             panel.AddItem(btn);
@@ -272,6 +281,26 @@ public class App : IExternalApplication
         catch (Exception ex)
         {
             DiagLog($"OnStartup: Ribbon setup failed (non-fatal): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Registers the embedded "BIM Assistant" dockable pane. Must be called from
+    /// OnStartup (Revit only accepts pane registration at application startup).
+    /// </summary>
+    private static void RegisterAssistantPane(UIControlledApplication application)
+    {
+        try
+        {
+            AssistantPaneInstance = new AssistantPane();
+            application.RegisterDockablePane(AssistantPane.PaneId, "BIM Assistant", AssistantPaneInstance);
+            DiagLog("OnStartup: BIM Assistant dockable pane registered");
+        }
+        catch (Exception ex)
+        {
+            // Null the instance so the command can tell "registration failed" from "server down".
+            AssistantPaneInstance = null;
+            DiagLog($"OnStartup: Dockable pane registration FAILED: {ex}");
         }
     }
 

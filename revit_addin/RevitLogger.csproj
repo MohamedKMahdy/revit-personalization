@@ -12,8 +12,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget>
-    <!-- No external NuGet packages, no WPF/WinForms — uses System.Text.Json built into
-         .NET 8. The add-in is headless; the BIM Assistant UI is the Python chatbot (:5000). -->
+    <!-- WPF is required to host the embedded WebView2 in the "BIM Assistant"
+         dockable pane. WebView2 assemblies are referenced from the Revit install
+         (Private=false) so we use Revit's own loaded copies — guaranteed version
+         match, and the native WebView2Loader.dll is already on Revit's search path. -->
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,6 +26,14 @@
     </Reference>
     <Reference Include="RevitAPIUI">
       <HintPath>C:\Program Files\Autodesk\Revit $(RevitVersion)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.Core">
+      <HintPath>C:\Program Files\Autodesk\Revit $(RevitVersion)\Microsoft.Web.WebView2.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.Wpf">
+      <HintPath>C:\Program Files\Autodesk\Revit $(RevitVersion)\Microsoft.Web.WebView2.Wpf.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
