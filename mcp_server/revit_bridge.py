@@ -315,8 +315,13 @@ def execute_shortcut(
         result = _dispatch_tool(tool, arguments)
         results.append({"step": i + 1, "tool": tool, "arguments": arguments, "result": result})
 
-        # Track last placed element ID for chaining
-        last_element_id = _extract_element_id(result) or last_element_id
+        # Track the last PLACED element id for {{last_element_id}} chaining. Only a
+        # placement creates the "subject" element that later Tag/SetParam steps act
+        # on — a Tag or SetParam result must NOT become the chain target, otherwise a
+        # Place → Tag → SetParam routine would set the parameter on the tag, not the
+        # element. (Tag-before-SetParam orderings are common in real logs.)
+        if tool == "place_element":
+            last_element_id = _extract_element_id(result) or last_element_id
 
     errors = [r for r in results if _step_failed(r.get("result", {}))]
     return {
