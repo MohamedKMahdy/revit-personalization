@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Revit 2025/2026 host .NET 8 → net8.0-windows. Default 2026; override with
+         dotnet build -p:RevitVersion=2025. -->
+    <RevitVersion Condition="'$(RevitVersion)' == ''">2026</RevitVersion>
+    <TargetFramework>net8.0-windows</TargetFramework>
+
+    <AssemblyName>BIMAssistant</AssemblyName>
+    <RootNamespace>BIMAssistant</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- WPF hosts the embedded WebView2 pane. WebView2 + Revit assemblies are
+         referenced from the Revit install (Private=false) so we reuse Revit's own
+         loaded copies (version match + the native WebView2Loader.dll is already on
+         Revit's search path). No NuGet packages → builds on the dev machine. -->
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>C:\Program Files\Autodesk\Revit $(RevitVersion)\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>C:\Program Files\Autodesk\Revit $(RevitVersion)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.Core">
+      <HintPath>C:\Program Files\Autodesk\Revit $(RevitVersion)\Microsoft.Web.WebView2.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Microsoft.Web.WebView2.Wpf">
+      <HintPath>C:\Program Files\Autodesk\Revit $(RevitVersion)\Microsoft.Web.WebView2.Wpf.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="BIMAssistant.addin">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Post-build: deploy to the Revit Addins folder (close Revit first; it locks the DLL). -->
+  <Target Name="DeployToRevit" AfterTargets="Build">
+    <PropertyGroup>
+      <RevitAddinsRoot>$(APPDATA)\Autodesk\Revit\Addins\$(RevitVersion)</RevitAddinsRoot>
+      <RevitAddinDir>$(RevitAddinsRoot)\BIMAssistant</RevitAddinDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(RevitAddinDir)" />
+    <ItemGroup>
+      <DeployFiles Include="$(TargetDir)**\*.*" Exclude="$(TargetDir)**\*.addin" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(RevitAddinDir)\%(RecursiveDir)"
+          SkipUnchangedFiles="false" OverwriteReadOnlyFiles="true" ContinueOnError="true" />
+    <Copy SourceFiles="$(TargetDir)BIMAssistant.addin" DestinationFiles="$(RevitAddinsRoot)\BIMAssistant.addin"
+          SkipUnchangedFiles="false" ContinueOnError="true" />
+    <Message Text="BIMAssistant deployed to $(RevitAddinDir)" Importance="high" />
+  </Target>
+
+</Project>

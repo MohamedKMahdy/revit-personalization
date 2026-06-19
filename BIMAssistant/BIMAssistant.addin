@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>BIM Assistant</Name>
+    <Assembly>BIMAssistant\BIMAssistant.dll</Assembly>
+    <FullClassName>BIMAssistant.App</FullClassName>
+    <ClientId>8f3b1c64-2a9e-4d57-b0e3-1f6a8c2d4e90</ClientId>
+    <VendorId>RevitPersonalization</VendorId>
+    <VendorDescription>BIM Personalization — embedded chat assistant (WebView2 → chatbot, execution via mcp-servers-for-revit)</VendorDescription>
+  </AddIn>
+</RevitAddIns>

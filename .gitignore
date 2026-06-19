@@ -47,3 +47,7 @@ results/
 
 # Note: revit_addin/ (the personalization Revit add-in) IS tracked.
 # Its build outputs are covered by the global bin/ and obj/ rules above.
+
+# BIMAssistant add-in build output
+BIMAssistant/bin/
+BIMAssistant/obj/
