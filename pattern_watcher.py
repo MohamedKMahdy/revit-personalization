@@ -92,14 +92,16 @@ def scan_once(min_support: int, dry_run: bool) -> int:
         if dry_run:
             print(f"[watcher]   DRY-RUN: would announce '{motif['name']}' "
                   f"({len(seq)} steps, vars={motif.get('parameters_to_prompt', [])})")
-        else:
-            try:
-                notify_pattern(label=r.label, count=r.support, motif=motif,
-                               tool_sequence=seq, examples=examples[:3], open_browser=False)
-                print(f"[watcher]   -> announced to the assistant: {motif['name']}")
-            except Exception as exc:
-                print(f"[watcher]   notify failed, will retry next scan: {exc}", file=sys.stderr)
-                continue
+            announced += 1
+            continue  # dry-run has no side effects — don't mark it announced
+
+        try:
+            notify_pattern(label=r.label, count=r.support, motif=motif,
+                           tool_sequence=seq, examples=examples[:3], open_browser=False)
+            print(f"[watcher]   -> announced to the assistant: {motif['name']}")
+        except Exception as exc:
+            print(f"[watcher]   notify failed, will retry next scan: {exc}", file=sys.stderr)
+            continue
 
         notified.add(r.id)
         _save_notified(notified)
