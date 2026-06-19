@@ -142,8 +142,6 @@ revit-personalization/
 ├── chatbot/
 │   └── chat_server.py           ← FastAPI conversational UI (localhost:5000)
 │
-├── RevitWriteServer/            ← legacy C# TCP write server (superseded by mcp-servers-for-revit)
-│
 ├── eval/
 │   └── run_experiment.py        ← Pattern Agent quality vs. k examples (§4.4 metrics)
 │
@@ -374,8 +372,10 @@ npm install && npm run build && npm start
 - mcp-servers-for-revit: 10 tools + Test Tools panel on `feature/tier1-3-tools`,
   pushed to the `myfork` remote (`origin` = upstream). R27 build config was
   added then dropped — R20–R26 supported.
+- **RevitWriteServer retired** — execution fully migrated to mcp-servers-for-revit;
+  its `operate_element` already covers Select/Isolate/Zoom. (Both backends bound
+  `localhost:8080`, so they were mutually exclusive — one replaces the other.)
+  Removed from the repo (gitignored; recoverable from history before `4c26536`).
 
 **Open / next**
 - [ ] Deploy updated hosted-family placement + verify in Revit (needs Revit open).
-- [ ] RevitWriteServer: implement Isolate/Zoom/Select commands (or fully migrate
-      to mcp-servers-for-revit's `operate_element`).
