@@ -63,7 +63,9 @@ def _load_notified() -> set[str]:
 def _save_notified(ids: set[str]) -> None:
     try:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+        tmp = STATE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+        tmp.replace(STATE_PATH)  # atomic — avoids a torn read-modify-write
     except Exception as exc:
         print(f"[watcher] could not save state: {exc}", file=sys.stderr)
 
@@ -97,7 +99,8 @@ def scan_once(min_support: int, dry_run: bool) -> int:
 
         try:
             notify_pattern(label=r.label, count=r.support, motif=motif,
-                           tool_sequence=seq, examples=examples[:3], open_browser=False)
+                           tool_sequence=seq, examples=examples[:3], open_browser=False,
+                           routine_id=r.id)
             print(f"[watcher]   -> announced to the assistant: {motif['name']}")
         except Exception as exc:
             print(f"[watcher]   notify failed, will retry next scan: {exc}", file=sys.stderr)

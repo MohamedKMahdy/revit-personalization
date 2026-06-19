@@ -50,13 +50,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Windows consoles default to cp1252; force UTF-8 so symbols print everywhere.
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
-
 from detector import ClusterDetector, DetectorConfig, Instance, make_detector
 from detector import synthetic as syn
 from shared.schemas import CandidateRoutine
@@ -384,6 +377,16 @@ def assert_deterministic() -> None:
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Windows consoles default to cp1252; force UTF-8 so symbols print everywhere.
+    # Done here, NOT at import time — reconfiguring stdout on import detaches the
+    # underlying buffer, which crashes pytest's output capture at teardown when this
+    # module is imported by a test.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     ap = argparse.ArgumentParser(description="v0.2-vs-baselines detection evaluation")
     ap.add_argument("--mode", choices=["all", "labeled", "real", "sweep"], default="all")
     ap.add_argument("--no-chart", action="store_true")

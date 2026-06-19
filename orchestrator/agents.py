@@ -39,8 +39,11 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# Force UTF-8 console output on Windows so Unicode labels print correctly
-if hasattr(sys.stdout, "reconfigure"):
+# Force UTF-8 console output on Windows so Unicode labels print correctly.
+# Guard on __main__: reconfiguring stdout at import time detaches the capture
+# stream's buffer and crashes pytest's output capture at teardown when this
+# module is imported by a test.
+if __name__ == "__main__" and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # Allow imports from project root when run as a script

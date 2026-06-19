@@ -41,10 +41,14 @@ def _is_server_running() -> bool:
 
 
 def _start_server() -> None:
-    """Start the chatbot server as a background subprocess."""
+    """Start the chatbot server as a background subprocess.
+
+    --no-watcher: this is only reached from notify_pattern(), i.e. a watcher is
+    already running (it's our caller). Without this flag the server would spawn a
+    SECOND watcher, doubling Anthropic calls and racing the shared state file."""
     server_py = str(Path(__file__).parent / "chat_server.py")
     subprocess.Popen(
-        [sys.executable, server_py, "--no-browser"],
+        [sys.executable, server_py, "--no-browser", "--no-watcher"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -63,10 +67,15 @@ def notify_pattern(
     tool_sequence: list,
     examples: list | None = None,
     open_browser: bool = True,
+    routine_id: str | None = None,
 ) -> None:
     """
     Push a detected pattern to the chatbot server.
     Starts the server first if it isn't already running.
+
+    routine_id ties this detection to a stable history entry: re-detecting the
+    same routine updates that entry instead of creating a duplicate. Pass the
+    detector's routine id when available.
     """
     if not _has_httpx:
         raise ImportError("httpx is required: pip install httpx")
@@ -75,6 +84,7 @@ def notify_pattern(
         _start_server()
 
     payload = {
+        "id":            routine_id,
         "label":         label,
         "count":         count,
         "motif":         motif,
