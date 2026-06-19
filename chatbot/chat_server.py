@@ -729,6 +729,7 @@ if __name__ == "__main__":
     parser.add_argument("--port",    type=int, default=PORT,  help="Port (default 5000)")
     parser.add_argument("--pattern", type=str, default=None,  help="Path to a candidate JSON file")
     parser.add_argument("--no-browser", action="store_true",  help="Don't open browser automatically")
+    parser.add_argument("--no-watcher", action="store_true",  help="Don't auto-start the pattern watcher")
     args = parser.parse_args()
 
     # Pre-load pattern
@@ -752,5 +753,20 @@ if __name__ == "__main__":
     if not args.no_browser:
         # Open browser after a short delay so the server is ready
         asyncio.get_event_loop().call_later(1.2, lambda: webbrowser.open(url))
+
+    # Auto-start the pattern watcher so detected routines appear in the assistant
+    # automatically — recreates the retired revit_addin PatternBridge flow for the
+    # generalBIMlog architecture. Disable with --no-watcher.
+    if not args.no_watcher:
+        import subprocess, atexit
+        try:
+            _watcher = subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve().parent.parent / "pattern_watcher.py")],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            print(f"Pattern watcher started (PID {_watcher.pid}).")
+            atexit.register(lambda: _watcher.poll() is None and _watcher.terminate())
+        except Exception as exc:
+            print(f"Could not start pattern watcher: {exc}")
 
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
