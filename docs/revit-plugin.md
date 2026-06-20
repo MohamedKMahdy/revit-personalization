@@ -1,6 +1,16 @@
 # Revit Add-in Documentation
 ## RevitLogger — BIM Authoring Log Capture
 
+> ⚠ **Historical / retired.** This document describes the original **in-repo**
+> `revit_addin/` logger (a Revit 2027-era prototype). That add-in is **retired**: the
+> pipeline's live log source is now the **`generalBIMlog`** `RevitLogger` add-in (Revit
+> 2025/2026), whose `ProjectSchema` output is adapted by
+> [`mcp_server/generalbimlog_reader.py`](../mcp_server/generalbimlog_reader.py). The
+> semantic-logging rationale below (the Jang & Lee schema and which fields are captured and
+> why) still explains *what* the pipeline records, but the implementation specifics here are
+> kept for historical reference only. For the current architecture see
+> [`PROJECT_OVERVIEW.md`](../PROJECT_OVERVIEW.md) and [`docs/architecture.md`](architecture.md).
+
 ---
 
 ## 1. Purpose

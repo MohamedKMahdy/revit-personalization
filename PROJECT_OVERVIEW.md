@@ -1,7 +1,7 @@
 # Agent-Augmented BIM Log Mining for Personalized Action Generation
 
 **Master's thesis system — full project documentation.**
-Last updated: 2026-06-13. Keep this file as the single source of truth for the
+Last updated: 2026-06-20. Keep this file as the single source of truth for the
 project's architecture, file map, run instructions, and design decisions.
 
 ---
@@ -46,6 +46,8 @@ The thesis contribution has three parts:
 | **Action logs** — PRIMARY (generalBIMlog output) | `%APPDATA%\Autodesk\Revit\Addins\<ver>\RevitLogger\Logs\eventlog\{projectGUID}.json` |
 | Action logs — LEGACY (retired `revit_addin/` plugin) | `%LOCALAPPDATA%\RevitPersonalization\logs\session_*.jsonl` |
 | Add-in diagnostic log | `…\RevitPersonalization\logs\_diag.txt` |
+| **Chatbot pattern history** (browsable detections + conversations) | `%LOCALAPPDATA%\RevitPersonalization\pattern_history.json` |
+| Pattern-watcher state (already-announced ids) | `%LOCALAPPDATA%\RevitPersonalization\pattern_watcher_state.json` |
 | **Shortcuts** (generated configs) | `C:\Users\DE1E7A\AppData\Local\RevitPersonalization\shortcuts\` |
 | Env / API key | `…\RevitPersonalization\.env` (gitignored) and project `.env` |
 | Synthetic test logs (pre-grouped) | `revit-personalization\tests\synthetic_logs\*.json` |
@@ -84,12 +86,30 @@ Local machine (Python)
   │     • pattern_agent.py  — examples → generalized motif JSON   (Opus)
   │     • macro_agent.py    — motif → MCP tool call sequence      (Sonnet)
   │
+  ├── pattern_watcher.py        ← daemon: scans generalBIMlog logs every N s, runs the two
+  │     agents on new routines (support ≥ N), and notify_pattern()s them to the chatbot.
+  │     Recreates the retired revit_addin PatternBridge for the generalBIMlog architecture.
+  │
   └── chatbot/  (FastAPI, localhost:5000)
         • chat_server.py — conversational UI, SSE streaming, ##TOKEN## controls
+        • PATTERN HISTORY — every detection is its own persisted record (own conversation +
+          status new/seen/executed/dismissed) in pattern_history.json; a left sidebar lists
+          them newest-first, click to re-open with the conversation restored; a 5 s poll
+          auto-surfaces fresh detections when the user isn't mid-conversation.
+        • auto-starts pattern_watcher.py on launch (disable with --no-watcher)
+        • trigger.py — notify_pattern() POSTs a detection to /api/pattern
+
+In-Revit add-in: BIMAssistant  (CHAT PANE — no logging, no writes)
+  • dockable WebView2 pane pointed at the chatbot (http://127.0.0.1:5000) +
+    an "Open Assistant" ribbon button. Hosts the chat UI inside Revit.
 
 TypeScript MCP server (mcp-servers-for-revit/server)
   • talks MCP to Claude, forwards tool calls over TCP to the in-Revit plugin
 ```
+
+There are thus **three** in-Revit add-ins, one per concern:
+generalBIMlog `RevitLogger` (LOG), mcp-servers-for-revit plugin (EXECUTE), and
+`BIMAssistant` (CHAT pane).
 
 **The two MCP languages explained:** the MCP protocol's official SDK is
 TypeScript, so the *server that talks to Claude* is TS. The *Revit API* is
@@ -110,15 +130,13 @@ revit-personalization/
 ├── shared/
 │   └── schemas.py               ← ActionRecord, CandidateRoutine, Motif, ShortcutConfig (pydantic)
 │
-├── revit_addin/                 ← C# add-in (OBSERVER). Revit 2025/2026, .NET 8
-│   ├── ActionRecord.cs          ← C# DTO mirroring shared/schemas.py (snake_case JSON)
-│   ├── ActionCapture.cs         ← DocumentChanged subscription, builds ActionRecords
-│   ├── RoutineDetector.cs       ← in-session live detector → fires suggestion
-│   ├── LogWriter.cs             ← async JSONL writer
-│   ├── PatternBridge.cs         ← on a repeat, launches the Python chatbot (:5000)
+├── revit_addin/                 ← ⚠ RETIRED in-repo C# observer. Logging is now sourced
+│   │                              from the generalBIMlog RevitLogger; execution from
+│   │                              mcp-servers-for-revit. Kept for historical reference only.
+│   ├── ActionRecord.cs, ActionCapture.cs, RoutineDetector.cs, LogWriter.cs
+│   ├── PatternBridge.cs         ← (its detect→notify role now lives in pattern_watcher.py)
 │   ├── ShortcutRunner.cs        ← retired stub (execution → mcp-servers-for-revit)
-│   ├── README.md                ← role, build/deploy, known gaps
-│   └── App.cs, SessionInfo.cs, ElementSnapshot.cs
+│   └── App.cs, SessionInfo.cs, ElementSnapshot.cs, README.md
 │
 ├── detector/                    ← ★ routine detection gate (see §6)
 │   ├── base.py                  ← DetectorConfig + Detector protocol
@@ -140,17 +158,33 @@ revit-personalization/
 │   └── macro_agent.py           ← motif → tool sequence (claude-sonnet-4-6)
 │
 ├── chatbot/
-│   └── chat_server.py           ← FastAPI conversational UI (localhost:5000)
+│   ├── chat_server.py           ← FastAPI conversational UI + browsable PATTERN HISTORY
+│   │                              (localhost:5000); auto-starts pattern_watcher.py
+│   └── trigger.py               ← notify_pattern() → POST /api/pattern (starts server if down)
+│
+├── BIMAssistant/                ← ★ C# in-Revit CHAT PANE add-in (Revit 2025/2026, .NET 8)
+│   ├── App.cs                   ← IExternalApplication: ribbon button + dockable pane
+│   ├── AssistantPane.cs         ← WebView2 pane → chatbot http://127.0.0.1:5000
+│   ├── OpenAssistantCommand.cs  ← "Open Assistant" ribbon command
+│   ├── ChatServer.cs            ← ensures the chatbot server is running
+│   └── AssistantAvailability.cs, BIMAssistant.addin, BIMAssistant.csproj
+│
+├── pattern_watcher.py           ← ★ daemon: scan generalBIMlog logs → agents → notify chatbot
 │
 ├── eval/
-│   └── run_experiment.py        ← Pattern Agent quality vs. k examples (§4.4 metrics)
+│   ├── run_experiment.py        ← Pattern Agent quality vs. k examples (§4.4 metrics)
+│   └── detection_eval.py        ← detector precision/recall/F1 + ARI (committed 03107d6)
 │
-├── tests/
-│   ├── test_detector.py         ← 12 tests for the v0.2 detector + v0.1 contrast
+├── tests/                       ← pytest suite, 49 passing (pytest.ini: testpaths=tests)
+│   ├── test_detector.py         ← v0.2 detector + v0.1/v1.5 contrast
+│   ├── test_detection_eval.py   ← detection-eval harness
+│   ├── test_generalbimlog_reader.py ← ProjectSchema → ActionRecord adapter
+│   ├── test_chatbot_history.py  ← pattern-history store + routes
+│   ├── test_execution_safety.py ← tool-allowlist enforcement (send_code_to_revit denied)
 │   └── synthetic_logs/*.json    ← pre-grouped CandidateRoutine fixtures
 │
-├── check_logs.py                ← diagnostic: dump what the add-in wrote
-├── test_mcp_server.py           ← script: end-to-end MCP server check
+├── check_logs.py                ← diagnostic: dump detected routines
+├── test_mcp_server.py           ← script: end-to-end MCP server check (run directly, not via pytest)
 └── setup_revit_env.py           ← writes the %LOCALAPPDATA% .env
 ```
 
@@ -158,10 +192,14 @@ revit-personalization/
 
 ## 5. The action log schema (`ActionRecord`)
 
-Defined in `shared/schemas.py` (pydantic) and mirrored in
-`revit_addin/ActionRecord.cs` (C#). `schema_version: "2.0"`, snake_case JSON keys,
-one object per line in `session_*.jsonl`. Follows the Jang & Lee (2023) enhanced
-BIM-logging lexicon.
+Defined in `shared/schemas.py` (pydantic). This is the pipeline's *internal* action
+model: `mcp_server/generalbimlog_reader.py` synthesises one `ActionRecord` stream
+(`Place` / `SetParam` / `Tag` / `Delete`, keyed by `element_id`) from the
+generalBIMlog `ProjectSchema` log — `CREATED` → `Place`/`Tag`, `REVISED` →
+one `SetParam` per changed user-editable instance param (recovered by diffing
+consecutive full-parameter snapshots), `DELETED` → `Delete`. snake_case keys; follows
+the Jang & Lee (2023) enhanced BIM-logging lexicon. (The retired `revit_addin/` plugin
+formerly emitted these directly as `session_*.jsonl`.)
 
 Key fields for detection:
 
@@ -270,8 +308,15 @@ Each is TS + C# (EventHandler + Command), except `resolve_category` (TS-only).
 | 3 | `export_view_image` | export active/named view to PNG |
 | 3 | `get_parameter_definitions` | full param schema (name, GUID, group, isShared) |
 
-Also: **Revit 2027** build config (`Debug R27`/`Release R27`, net8.0) added to
-`RevitMCPCommandSet.csproj`; all tools registered in `command.json`.
+All tools are registered in `command.json`. **Revit version support: R25/R26 only**
+(net8.0) — the older R20–R24 configs and the previously-added R27 config were both
+dropped, so the commandset now builds for Revit 2025/2026 alone.
+
+**Build via GitHub Actions CI.** The fork is built by
+`.github/workflows/build-plugin.yml`, not locally: corporate NuGet
+`PackageSourceMapping` blocks `nuget.org` on this machine, so the C# commandset/plugin
+cannot restore packages here. CI restores and produces the R25/R26 artifacts, which are
+then deployed into Revit.
 
 ### Flexibility — arbitrary C#
 `send_code_to_revit` (already in the repo) compiles and runs arbitrary C# via
@@ -282,7 +327,9 @@ cover.
 A **"Test Tools"** ribbon button (`plugin/Core/TestToolsCommand.cs` +
 `plugin/UI/TestToolsWindow.xaml[.cs]`) opens a window that lists every tool with
 per-tool Run + Run-All, a server status dot, element-ID picker, and formatted
-JSON results — sends JSON-RPC to localhost:8080 on background threads.
+JSON results — sends JSON-RPC to localhost:8080 on background threads. The window is
+now **modeless** (`Show()`): the earlier modal `ShowDialog()` blocked Revit's UI
+thread, so the tools' external events never ran and every call timed out.
 
 ---
 
@@ -311,18 +358,29 @@ python test_mcp_server.py                             # resources + tools (no Re
 python eval/run_experiment.py --k-values 1,3,5 --reps 3
 ```
 
-### Chatbot UI
+### Chatbot UI + pattern history
 ```bash
 python chatbot/chat_server.py                         # http://localhost:5000
+# auto-starts pattern_watcher.py; add --no-watcher / --no-browser / --demo / --fresh as needed
+```
+The chatbot persists every detection (with its conversation) to
+`%LOCALAPPDATA%\RevitPersonalization\pattern_history.json` and lists them in a
+left sidebar; new detections auto-surface on a 5 s poll. The in-Revit
+**BIM Assistant** pane (`BIMAssistant/`) embeds this same UI via WebView2.
+
+### Watcher (detect → generate → notify)
+```bash
+python pattern_watcher.py --once --dry-run            # one scan, generate, don't notify
 ```
 
 ### mcp-servers-for-revit
 ```bash
 cd C:\Users\DE1E7A\mcp-servers-for-revit\server
 npm install && npm run build && npm start
-# C# side: build commandset (Debug R25/R26/R27) in Visual Studio,
-# then in Revit click "Revit MCP Switch" to start the TCP server (port 8080),
-# and "Test Tools" to exercise every tool.
+# C# side: the commandset builds R25/R26 ONLY (R27 dropped), and is built by
+# GitHub Actions CI (corporate NuGet PackageSourceMapping blocks nuget.org locally).
+# In Revit click "Revit MCP Switch" to start the TCP server (port 8080),
+# and "Test Tools" (now modeless) to exercise every tool.
 ```
 
 ---
@@ -344,7 +402,8 @@ npm install && npm run build && npm start
    `log_reader` episode-grouping (which was actually richer, "v1.5"). This keeps
    the precision/recall comparison meaningful — the baseline genuinely exhibits
    all four weaknesses.
-2. **`key` derived in Python**, C# logger untouched (no re-deploy).
+2. **`key` derived in Python** by the featurizer/adapter — the generalBIMlog C# logger
+   is untouched (no re-deploy needed to change detection keys).
 3. **Two ranking axes kept separate** (`support` frequency + `confidence`
    tightness) so routines can be ranked by either or both later.
 4. **v0.2 is the default**; v0.1 reachable only by explicit selection, never a
@@ -370,12 +429,34 @@ npm install && npm run build && npm start
 - Pattern Agent default model aligned to `claude-opus-4-8` (was `claude-opus-4-7`;
   see §9). Macro Agent stays `claude-sonnet-4-6`.
 - mcp-servers-for-revit: 10 tools + Test Tools panel on `feature/tier1-3-tools`,
-  pushed to the `myfork` remote (`origin` = upstream). R27 build config was
-  added then dropped — R20–R26 supported.
+  pushed to the `myfork` remote (`origin` = upstream). Version support narrowed to
+  **R25/R26 only** — the R20–R24 configs and the R27 config were both dropped.
+- mcp-servers-for-revit plugin **built + deployed via GitHub Actions CI**
+  (`.github/workflows/build-plugin.yml` in the fork), because corporate NuGet
+  `PackageSourceMapping` blocks `nuget.org` locally. The **Test Tools window is now
+  modeless** (`Show()` instead of `ShowDialog()`): the modal dialog had blocked
+  Revit's UI thread, so tool external events timed out.
+- **Chatbot pattern HISTORY** (commit `cbc8cec`) — every detection is its own
+  persisted record (own conversation + status new/seen/executed/dismissed) in
+  `%LOCALAPPDATA%\RevitPersonalization\pattern_history.json` (survives restarts);
+  a left sidebar lists detections newest-first, click to re-open with the
+  conversation restored; a 5 s poll auto-surfaces fresh detections when the user
+  isn't mid-conversation.
+- **`pattern_watcher.py`** (auto-started by the chatbot) restores the detect→notify
+  bridge — scans the generalBIMlog logs, runs both agents on new routines
+  (support ≥ N), and pushes them to the assistant (recreates the retired
+  `revit_addin` PatternBridge flow for the generalBIMlog architecture).
+- **`BIMAssistant/` pane** — standalone in-Revit chat-pane add-in (dockable WebView2 →
+  chatbot :5000 + "Open Assistant" ribbon button). No logging, no model writes; the
+  third independent in-Revit add-in alongside generalBIMlog (log) and
+  mcp-servers-for-revit (execute).
 - **RevitWriteServer retired** — execution fully migrated to mcp-servers-for-revit;
   its `operate_element` already covers Select/Isolate/Zoom. (Both backends bound
   `localhost:8080`, so they were mutually exclusive — one replaces the other.)
   Removed from the repo (gitignored; recoverable from history before `4c26536`).
+- **In-repo `revit_addin/` retired** — logging sourced from generalBIMlog, execution
+  from mcp-servers-for-revit; the folder is kept for historical reference only.
+- Test suite: **49 passing** under `pytest` (`pytest.ini` sets `testpaths=tests`).
 
 **Open / next**
 - [ ] Deploy updated hosted-family placement + verify in Revit (needs Revit open).
