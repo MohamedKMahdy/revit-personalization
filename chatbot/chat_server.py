@@ -55,6 +55,38 @@ HISTORY_PATH = (Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
                 / "RevitPersonalization" / "pattern_history.json")
 
 # ── App + Anthropic client ────────────────────────────────────────────────────
+def _load_api_key() -> None:
+    """Ensure ANTHROPIC_API_KEY is set before constructing the client.
+
+    The server is often launched WITHOUT the key in its environment — e.g. by the
+    BIMAssistant add-in (it inherits Revit's environment) or via pythonw. Read the
+    key from the project .env (or the %LOCALAPPDATA% .env) so the Anthropic client
+    can authenticate; otherwise every chat/greeting fails with 'Could not resolve
+    authentication method'.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    candidates = [
+        Path(__file__).resolve().parent.parent / ".env",          # project .env
+        Path(os.environ.get("LOCALAPPDATA", str(Path.home())))    # add-in .env
+        / "RevitPersonalization" / ".env",
+    ]
+    for env in candidates:
+        try:
+            if not env.exists():
+                continue
+            for line in env.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("ANTHROPIC_API_KEY="):
+                    os.environ["ANTHROPIC_API_KEY"] = (
+                        line.split("=", 1)[1].strip().strip('"').strip("'"))
+                    return
+        except Exception:
+            continue
+
+
+_load_api_key()
+
 app     = FastAPI(title="BIM Pattern Assistant")
 _client = anthropic.AsyncAnthropic()
 
