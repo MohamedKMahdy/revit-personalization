@@ -169,7 +169,7 @@ def execute_revit_command(shortcut_id: str, params: dict | None = None) -> dict:
         (TypeScript MCP server + in-Revit plugin) step by step over JSON-RPC.
       - The C# RevitLogger add-in is OBSERVER ONLY and is NOT involved in execution.
 
-    Requires: Revit open with the mcp-servers-for-revit plugin active (default port 3001).
+    Requires: Revit open with the mcp-servers-for-revit plugin active (default TCP port 8080).
 
     Args:
         shortcut_id: ID of a saved shortcut (from generate_command).
@@ -226,7 +226,7 @@ def query_model(tool_name: str, arguments: dict | None = None) -> dict:
 
     For natural-language queries, use query_model_state() instead.
 
-    Requires: Revit open with the mcp-servers-for-revit plugin active (default port 3001).
+    Requires: Revit open with the mcp-servers-for-revit plugin active (default TCP port 8080).
 
     Args:
         tool_name:  mcp-servers-for-revit tool name.
@@ -341,7 +341,7 @@ if __name__ == "__main__":
         print(f"              logs://routine/{{id}}/examples")
         print(f"  Tools     : analyze_pattern, generate_command, execute_revit_command,")
         print(f"              query_model, query_model_state, list_shortcuts")
-        print(f"  Backend   : mcp-servers-for-revit @ {os.environ.get('MCP_REVIT_BACKEND_URL','http://localhost:3001')}")
+        print(f"  Backend   : mcp-servers-for-revit @ TCP {os.environ.get('REVIT_PLUGIN_HOST','localhost')}:{os.environ.get('REVIT_PLUGIN_PORT','8080')}")
         print(f"  MCP Insp. : npx @modelcontextprotocol/inspector  -> {args.transport}://http://127.0.0.1:{args.port}/sse")
         print(f"  Autodesk  : Add MCP Server -> http://{host}:{args.port}/sse", flush=True)
         mcp.run(transport=args.transport)

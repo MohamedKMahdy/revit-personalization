@@ -27,7 +27,7 @@ Environment variables:
     ANTHROPIC_API_KEY         — required; your Anthropic API key
     PATTERN_AGENT_MODEL       — override Pattern Agent model (default: claude-opus-4-8)
     MACRO_AGENT_MODEL         — override Macro Agent model (default: claude-sonnet-4-6)
-    MCP_REVIT_BACKEND_URL     — mcp-servers-for-revit URL (default: http://localhost:3001)
+    REVIT_PLUGIN_HOST/PORT    — mcp-servers-for-revit plugin TCP socket (default: localhost:8080)
 """
 from __future__ import annotations
 
