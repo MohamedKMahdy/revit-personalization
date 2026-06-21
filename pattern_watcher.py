@@ -113,6 +113,20 @@ def scan_once(min_support: int, dry_run: bool) -> int:
 
 
 def main() -> int:
+    # Windows + pythonw / a redirected stdout defaults to cp1252, which cannot encode the
+    # "→" in routine labels — a bare print() then raises UnicodeEncodeError and the scan
+    # dies BEFORE it can notify (the chatbot launches this headless with stdout→DEVNULL,
+    # so the crash is invisible). Force UTF-8 and tolerate a None stream under pythonw.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser(description="Detect routines from generalBIMlog logs and push them to the BIM Assistant.")
     ap.add_argument("--interval", type=int, default=15, help="seconds between scans (default 15)")
     ap.add_argument("--min-support", type=int, default=3, help="min cluster size to announce (default 3)")

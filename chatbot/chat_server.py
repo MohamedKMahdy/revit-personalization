@@ -1222,6 +1222,9 @@ if __name__ == "__main__":
             _watcher = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve().parent.parent / "pattern_watcher.py")],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                # Force UTF-8 in the headless child so the "→" in routine labels can't
+                # raise UnicodeEncodeError (cp1252) and silently kill every scan.
+                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
             )
             print(f"Pattern watcher started (PID {_watcher.pid}).")
             atexit.register(lambda: _watcher.poll() is None and _watcher.terminate())
