@@ -44,7 +44,7 @@ from pydantic import BaseModel
 
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin
+from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT  = int(os.environ.get("CHATBOT_PORT", "5000"))
@@ -117,7 +117,7 @@ def _lock_for(pid: str) -> asyncio.Lock:
     return lock
 
 _TOKEN_RE = re.compile(
-    r"##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##LOCATION:[^#]*##"
+    r"##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##"
 )
 
 
@@ -240,14 +240,20 @@ parameters if needed, then execute or dismiss based on their decision.
 
 ━━━ RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - Keep every response SHORT (2–4 sentences). This is a quick decision, not a lecture.
-- BEFORE outputting ##EXECUTE##, you MUST know WHERE to place the element.
-  Ask the user for a location if they haven't given one, e.g.:
-    "Where would you like to place it? Give me coordinates (X, Y in metres) or say 'at the origin'."
-  Once the user gives a location, output a hidden token on its own line:
-    ##LOCATION:x,y,z##
-  (replace x/y/z with the numeric values, e.g. ##LOCATION:10.5,3.0,0## )
-  Then confirm and output ##EXECUTE## on the next line.
-  If the user says "at the origin" or similar, use ##LOCATION:0,0,0##.
+- BEFORE outputting ##EXECUTE##, you MUST know WHERE to place the element. There are TWO
+  ways to get a location — offer BOTH when you don't have one yet ("Want to click the spot
+  in Revit, or give me X, Y in metres?"):
+  1) CLICK IN REVIT (best, and required-in-spirit for a door/window, which must sit on a
+     wall). If the user wants to pick / select / click / "do it manually" / "let me choose"
+     / "show me where", output a token on its own line:
+       ##PICK##
+     then ONE line like: "Click the spot in Revit — for a door or window, click ON a wall so
+     it has something to host on." Do NOT also output ##EXECUTE##: picking runs the placement
+     automatically as soon as they click.
+  2) TYPED COORDINATES. When the user gives X, Y (metres), output on its own line:
+       ##LOCATION:x,y,z##
+     (numeric values, e.g. ##LOCATION:10.5,3.0,0## ; "at the origin" → ##LOCATION:0,0,0##),
+     then confirm and output ##EXECUTE## on the next line.
 - When the user confirms AND a location is known (yes / go / execute / do it / confirm / sure), output exactly:
     ##EXECUTE##
   as its own line, then a brief "Running now..." message.
@@ -369,6 +375,7 @@ async def _stream(rec: dict, user_text: str | None = None) -> AsyncIterator[str]
         elif "##ISOLATE##"  in full: action = "isolate"
         elif "##ZOOM##"     in full: action = "zoom"
         elif "##SELECT##"   in full: action = "select"
+        elif "##PICK##"     in full: action = "pick"
 
         _save_history()
         yield f"data: {json.dumps({'done': True, 'action': action})}\n\n"
@@ -620,6 +627,32 @@ async def api_select(body: ActionIn = ActionIn()):
     return await _operate_last_element(_rec_for(body.pattern_id), "Select")
 
 
+@app.post("/api/pick")
+async def api_pick(body: ActionIn = ActionIn()):
+    """Let the user CLICK the placement location in Revit, then store it for /api/execute.
+
+    Blocks on the human click (long socket timeout, run off the loop). For a hosted family
+    the user clicks ON a wall and the backend snaps the door/window to that wall.
+    """
+    rec = _rec_for(body.pattern_id)
+    if not rec:
+        return {"error": "No pattern loaded", "success": False}
+    result = await asyncio.to_thread(
+        pick_point, "point",
+        "Click the placement point — for a door/window, click ON a wall so it can host.")
+    if not (isinstance(result, dict) and result.get("Success")):
+        if isinstance(result, dict):
+            msg = result.get("Message") or result.get("error") or "pick cancelled"
+        else:
+            msg = "pick failed"
+        return {"error": msg, "success": False}
+    resp = result.get("Response") or {}
+    loc = {"x": resp.get("x"), "y": resp.get("y"), "z": resp.get("z")}
+    rec["pending_location"] = loc
+    _save_history()
+    return {"success": True, **loc}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Chat UI  (served at /)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -796,7 +829,7 @@ function esc(s){
     .replace(/\n/g,'<br>');
 }
 function stripTokens(s){
-  return s.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##LOCATION:[^#]*##/g,'').trim();
+  return s.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##/g,'').trim();
 }
 function withPid(body){ return Object.assign({pattern_id:_curId}, body||{}); }
 
@@ -996,10 +1029,36 @@ async function consumeStream(resp){
 function handleAction(action){
   if     (action === 'execute')  runExec();
   else if(action === 'dismiss')  runDismiss();
+  else if(action === 'pick')     runPick();
   else if(action === 'isolate')  runAction('/api/isolate', 'Isolating element');
   else if(action === 'zoom')     runAction('/api/zoom',    'Zooming to element');
   else if(action === 'select')   runAction('/api/select',  'Selecting element');
   else unlockUI();
+}
+async function runPick(){
+  if(!_curId) return;
+  _busy = false; _executing = false;
+  inp().disabled = true; document.getElementById('btn-send').disabled = true;
+  setStatus('🖱 Click the placement point in Revit (for a door/window, click on a wall)…', 'info');
+  try{
+    const r = await fetch('/api/pick', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(withPid())
+    });
+    const res = await r.json();
+    if(res.success){
+      const xm = (res.x/1000).toFixed(2), ym = (res.y/1000).toFixed(2);
+      addBubble('bot', `Got it — placing at (${xm}, ${ym}) m.`);
+      runExec();   // place using the just-picked location
+    } else {
+      setStatus(`✗ ${res.error || 'pick cancelled'}`, 'error');
+      addBubble('bot', `The pick didn't complete (${res.error || 'cancelled'}). Try again, or give me X, Y in metres.`);
+      unlockUI();
+    }
+  } catch(e){
+    setStatus(`✗ ${e.message}`, 'error');
+    addBubble('bot', `Couldn't run the pick: ${e.message}`);
+    unlockUI();
+  }
 }
 async function streamFrom(url, body){
   lockUI(); showTyping();
