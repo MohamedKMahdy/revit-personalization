@@ -128,6 +128,21 @@ def _call_plugin(command: str, params: dict, timeout: float = REVIT_PLUGIN_TIMEO
         return {"error": str(exc)}
 
 
+def pick_point(mode: str = "point", prompt: str | None = None, timeout: float = 190.0) -> dict:
+    """Ask the user to pick the placement location interactively in Revit.
+
+    Blocks until the user clicks (or presses Esc), so the timeout is long. Returns the
+    plugin's AIResult envelope:
+      point mode → {"Success": true, "Response": {"mode":"point","x","y","z"}}
+      line  mode → {"Success": true, "Response": {"mode":"line","p0":{x,y,z},"p1":{x,y,z}}}
+    Coordinates are in millimetres. On Esc/cancel → {"Success": false, "Message": "Pick cancelled."}.
+    """
+    params: dict = {"mode": mode}
+    if prompt:
+        params["prompt"] = prompt
+    return _call_plugin("pick_point", params, timeout=timeout)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1.  Model context queries  (READ — used by Macro Agent for grounding)
 # ═══════════════════════════════════════════════════════════════════════════════
