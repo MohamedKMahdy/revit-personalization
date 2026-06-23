@@ -735,38 +735,53 @@ _HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BIM Assistant</title>
+<title>TUM · BIM Personalization Assistant</title>
 <style>
+/* ── TUM corporate-design palette (official values) ───────────────────────────── */
+:root{
+  --tum:#3070B3;          /* TUM Blue (primary)            */
+  --tum-d:#26588f;        /* TUM Blue, darker (hover)      */
+  --tum-dark:#0A2D57;     /* TUM dark navy (sidebar/deep)  */
+  --tum-l1:#5E94D4;       /* TUM Blue light                */
+  --tum-l2:#C2D7EF;       /* TUM Blue very light           */
+  --tum-green:#A2AD00;    /* TUM Green (confirm/execute)   */
+  --tum-green-d:#8a9300;
+  --tum-orange:#E37222;   /* TUM Orange (attention)        */
+  --tum-red:#C4151C;      /* attention/destructive         */
+  --ink:#20252b;
+  --line:#e3e6ea;
+  --font:'TUM Neue Helvetica','Helvetica Neue',Helvetica,Arial,'Segoe UI',Roboto,sans-serif;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-     background:#f0f2f5;height:100vh;display:flex;flex-direction:row;overflow:hidden}
+body{font-family:var(--font);
+     background:#eef1f5;height:100vh;display:flex;flex-direction:row;overflow:hidden;color:var(--ink)}
 
 /* ── History sidebar ── */
-.sidebar{width:248px;flex-shrink:0;background:#1f2733;color:#cdd6e0;
+.sidebar{width:248px;flex-shrink:0;background:var(--tum-dark);color:#cdd9e8;
          display:flex;flex-direction:column;height:100vh;
          transition:margin-left .2s ease}
 .sidebar.hidden{margin-left:-248px}
 .sb-hdr{padding:15px 16px;font-size:13px;font-weight:600;letter-spacing:.02em;
-        color:#fff;border-bottom:1px solid rgba(255,255,255,.08);
+        color:#fff;border-bottom:1px solid rgba(255,255,255,.10);
         display:flex;align-items:center;gap:8px}
 .sb-hdr .ic{font-size:15px}
 .sb-list{flex:1;overflow-y:auto;padding:6px}
 .hist-item{padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:4px;
            border:1px solid transparent;transition:.12s;position:relative}
-.hist-item:hover{background:rgba(255,255,255,.06)}
-.hist-item.active{background:rgba(6,150,215,.22);border-color:rgba(6,150,215,.5)}
+.hist-item:hover{background:rgba(255,255,255,.07)}
+.hist-item.active{background:rgba(48,112,179,.32);border-color:rgba(94,148,212,.6)}
 .hist-top{display:flex;align-items:center;gap:8px}
 .hist-label{font-size:13px;font-weight:500;color:#fff;white-space:nowrap;
             overflow:hidden;text-overflow:ellipsis}
 .hist-meta{font-size:11px;opacity:.6;margin-top:3px;margin-left:16px}
 .sdot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:#8a94a6}
-.sdot.new{background:#0696d7;animation:pulse 1.6s infinite}
-.sdot.executed{background:#27ae60}
+.sdot.new{background:var(--tum-l1);animation:pulse 1.6s infinite}
+.sdot.executed{background:var(--tum-green)}
 .sdot.dismissed{background:#6c757d}
 .sdot.seen{background:#8a94a6}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(6,150,215,.55)}
-                 70%{box-shadow:0 0 0 7px rgba(6,150,215,0)}
-                 100%{box-shadow:0 0 0 0 rgba(6,150,215,0)}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(94,148,212,.6)}
+                 70%{box-shadow:0 0 0 7px rgba(94,148,212,0)}
+                 100%{box-shadow:0 0 0 0 rgba(94,148,212,0)}}
 .hist-del{position:absolute;top:8px;right:8px;opacity:0;border:none;background:none;
           color:#aeb7c4;cursor:pointer;font-size:14px;line-height:1;padding:2px 4px;
           border-radius:4px;transition:.12s}
@@ -778,28 +793,32 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .main{flex:1;min-width:0;display:flex;flex-direction:column;height:100vh}
 
 /* ── Header ── */
-.hdr{background:#0696d7;color:#fff;padding:14px 18px;
-     display:flex;align-items:center;gap:12px;flex-shrink:0;
-     box-shadow:0 2px 8px rgba(0,0,0,.18)}
+.hdr{background:var(--tum);color:#fff;padding:12px 18px;
+     display:flex;align-items:center;gap:14px;flex-shrink:0;
+     border-bottom:3px solid var(--tum-dark);
+     box-shadow:0 2px 8px rgba(10,45,87,.20)}
 .sb-toggle{background:rgba(255,255,255,.16);color:#fff;border:none;border-radius:6px;
            width:34px;height:34px;font-size:16px;cursor:pointer;flex-shrink:0;
            position:relative;display:flex;align-items:center;justify-content:center}
 .sb-toggle:hover{background:rgba(255,255,255,.26)}
-.sb-badge{position:absolute;top:-5px;right:-5px;background:#e74c3c;color:#fff;
+.sb-badge{position:absolute;top:-5px;right:-5px;background:var(--tum-orange);color:#fff;
           font-size:10px;font-weight:700;min-width:16px;height:16px;border-radius:8px;
           display:none;align-items:center;justify-content:center;padding:0 4px}
-.hdr-icon{font-size:22px;line-height:1}
+/* TUM wordmark lockup */
+.tum-logo{height:26px;width:auto;flex-shrink:0;display:block}
+.hdr-divider{width:1px;height:30px;background:rgba(255,255,255,.45);flex-shrink:0}
 .hdr-text{min-width:0}
 .hdr-text h1{font-size:15px;font-weight:600;letter-spacing:.01em;
              white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hdr-text p{font-size:11px;opacity:.8;margin-top:3px}
+.hdr-text p{font-size:11px;opacity:.85;margin-top:2px;
+            white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hdr-actions{margin-left:auto;display:flex;gap:8px;flex-shrink:0}
 .btn{padding:8px 18px;border:none;border-radius:6px;font-size:13px;
-     font-weight:500;cursor:pointer;transition:.15s}
+     font-weight:600;cursor:pointer;transition:.15s}
 .btn:disabled{opacity:.45;cursor:not-allowed}
-.btn-exec{background:#27ae60;color:#fff}
-.btn-exec:not(:disabled):hover{background:#219150}
-.btn-dismiss{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.3)}
+.btn-exec{background:var(--tum-green);color:#fff}
+.btn-exec:not(:disabled):hover{background:var(--tum-green-d)}
+.btn-dismiss{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.35)}
 .btn-dismiss:not(:disabled):hover{background:rgba(255,255,255,.28)}
 
 /* ── Chat area ── */
@@ -813,16 +832,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 .msg.usr{align-self:flex-end;flex-direction:row-reverse}
 .avatar{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;
         justify-content:center;font-size:15px;flex-shrink:0;margin-top:2px}
-.msg.bot .avatar{background:#0696d7;color:#fff}
+.msg.bot .avatar{background:var(--tum);color:#fff}
 .msg.usr .avatar{background:#dee2e6;color:#555}
 .bubble{background:#fff;border-radius:14px;padding:10px 15px;
-        font-size:14px;line-height:1.6;color:#222;
-        box-shadow:0 1px 3px rgba(0,0,0,.09)}
-.msg.usr .bubble{background:#0696d7;color:#fff}
+        font-size:14px;line-height:1.6;color:var(--ink);
+        box-shadow:0 1px 3px rgba(10,45,87,.10)}
+.msg.usr .bubble{background:var(--tum);color:#fff}
 
 /* ── Typing dots ── */
 .dots{display:flex;gap:5px;padding:4px 2px}
-.dot{width:8px;height:8px;border-radius:50%;background:#adb5bd;
+.dot{width:8px;height:8px;border-radius:50%;background:var(--tum-l1);
      animation:bounce 1.1s ease-in-out infinite}
 .dot:nth-child(2){animation-delay:.18s}
 .dot:nth-child(3){animation-delay:.36s}
@@ -830,21 +849,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 
 /* ── Status bar ── */
 .status{padding:11px 18px;font-size:13px;font-weight:500;text-align:center;
-        border-top:1px solid #e5e5e5;flex-shrink:0;display:none}
-.status.info   {background:#d1ecf1;color:#0c5460;display:block}
-.status.success{background:#d4edda;color:#155724;display:block}
-.status.error  {background:#f8d7da;color:#721c24;display:block}
+        border-top:1px solid var(--line);flex-shrink:0;display:none}
+.status.info   {background:#e7eff8;color:var(--tum-dark);display:block}
+.status.success{background:#eef2cc;color:#5c6300;display:block}
+.status.error  {background:#fbe3e3;color:#7a1318;display:block}
 
 /* ── Input area ── */
 .input-row{display:flex;gap:8px;padding:12px 16px;background:#fff;
-           border-top:1px solid #e5e5e5;flex-shrink:0}
-#inp{flex:1;padding:10px 16px;border:1px solid #ced4da;border-radius:22px;
-     font-size:14px;outline:none;transition:.15s}
-#inp:focus{border-color:#0696d7;box-shadow:0 0 0 3px rgba(6,150,215,.12)}
+           border-top:1px solid var(--line);flex-shrink:0}
+#inp{flex:1;padding:10px 16px;border:1px solid #c7ced6;border-radius:22px;
+     font-size:14px;outline:none;transition:.15s;font-family:var(--font)}
+#inp:focus{border-color:var(--tum);box-shadow:0 0 0 3px rgba(48,112,179,.16)}
 #inp:disabled{background:#f8f9fa}
-.btn-send{background:#0696d7;color:#fff;padding:10px 18px;
-          border:none;border-radius:22px;font-size:13px;font-weight:500;cursor:pointer}
-.btn-send:hover{background:#0584c0}
+.btn-send{background:var(--tum);color:#fff;padding:10px 18px;
+          border:none;border-radius:22px;font-size:13px;font-weight:600;cursor:pointer;
+          font-family:var(--font)}
+.btn-send:hover{background:var(--tum-d)}
 .btn-send:disabled{opacity:.45;cursor:not-allowed}
 </style>
 </head>
@@ -858,10 +878,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 <div class="main">
   <div class="hdr">
     <button class="sb-toggle" id="sb-toggle" onclick="toggleSidebar()">☰<span class="sb-badge" id="sb-badge"></span></button>
-    <div class="hdr-icon">🔍</div>
+    <svg class="tum-logo" viewBox="0 0 132 40" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TUM — Technical University of Munich" fill="#fff">
+      <rect x="0" y="0" width="34" height="8.5"/><rect x="12.75" y="0" width="8.5" height="40"/>
+      <rect x="44" y="0" width="8.5" height="40"/><rect x="69.5" y="0" width="8.5" height="40"/><rect x="44" y="31.5" width="34" height="8.5"/>
+      <polygon points="88,40 88,0 96.5,0 110,26 123.5,0 132,0 132,40 123.5,40 123.5,17 114,35 106,35 96.5,17 96.5,40"/>
+    </svg>
+    <div class="hdr-divider"></div>
     <div class="hdr-text">
-      <h1 id="p-label">Pattern Detected</h1>
-      <p id="p-meta">Loading…</p>
+      <h1 id="p-label">BIM Personalization Assistant</h1>
+      <p id="p-meta">Technische Universität München · loading…</p>
     </div>
     <div class="hdr-actions">
       <button class="btn btn-exec"    id="btn-exec" onclick="clickExec()">▶ Execute</button>

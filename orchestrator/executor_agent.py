@@ -30,11 +30,18 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from orchestrator import revit_tools
+
 EXECUTOR_MODEL = os.environ.get("EXECUTOR_MODEL", "claude-sonnet-4-6")
 MAX_ITERS = int(os.environ.get("EXECUTOR_MAX_ITERS", "14"))
 
 # ── The tools the executor may use (Anthropic schema). This list IS the allowlist. ──
-TOOL_SCHEMAS: list[dict] = [
+# CURATED_SCHEMAS are the ergonomic, hand-tuned tools for the common routine path
+# (place/set/tag + the model-grounding reads). The full plugin surface (create walls,
+# floors, grids, levels, rooms, dimensions, color, queries, duplicate, delete, atomic
+# groups, image export, …) is appended from revit_tools below, so the executor has the
+# FULL capabilities of the backend. send_code_to_revit is never included.
+CURATED_SCHEMAS: list[dict] = [
     {
         "name": "place_element",
         "description": (
@@ -129,6 +136,8 @@ TOOL_SCHEMAS: list[dict] = [
     },
 ]
 
+# The full toolset the executor sees = curated ergonomic tools + the entire plugin surface.
+TOOL_SCHEMAS: list[dict] = CURATED_SCHEMAS + revit_tools.TOOL_SCHEMAS
 ALLOWED_TOOLS = {t["name"] for t in TOOL_SCHEMAS}
 
 EXECUTOR_SYSTEM = """\
@@ -162,6 +171,15 @@ YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
 Apply the routine's parameters and tag once the element is placed. When the routine is fully
 done (placed + parameters set + tagged), reply with a SHORT plain-text summary and DO NOT call
 any more tools. Be concise; the user is watching your steps.
+
+YOU HAVE THE FULL REVIT BACKEND, not just place/set/tag. Beyond the curated tools you can also
+create walls, floors, grids, levels, rooms, structural framing and dimensions; color/override,
+duplicate, or delete elements; run atomic transaction groups; and query the model in depth
+(element parameters & definitions, element info, material quantities, room data, view elements,
+ai_element_filter). Prefer the simple curated tools for the common Place→SetParam→Tag routine;
+reach for the advanced tools when the goal needs them or to gather context. All geometry is in
+MILLIMETRES. Tools marked DESTRUCTIVE (delete_element, operate_element, execute_transaction_group)
+change or remove existing work — use them only when the goal clearly asks for it.
 """
 
 
@@ -249,6 +267,11 @@ def real_dispatch(name: str, args: dict) -> dict:
             r = res.get("Response") or {}
             return {"success": True, "message": "picked", "location": {"x": r.get("x"), "y": r.get("y"), "z": r.get("z")}}
         return {"success": False, "message": _msg(res) or "pick cancelled"}
+
+    # Full plugin surface — every other exposed mcp-servers-for-revit command is dispatched
+    # generically (its args ARE the plugin params). send_code_to_revit is not in this set.
+    if name in revit_tools.TOOL_NAMES:
+        return revit_tools.dispatch(name, args)
 
     return {"success": False, "message": f"unknown or disallowed tool: {name}"}
 

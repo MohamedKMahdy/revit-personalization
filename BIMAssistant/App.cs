@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Windows.Media.Imaging;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.UI;
 
@@ -60,11 +61,32 @@ public class App : IExternalApplication
             {
                 ToolTip = "Open the embedded BIM Personalization chat assistant in a dockable pane.",
                 AvailabilityClassName = "BIMAssistant.AssistantAvailability",
+                Image = LoadIcon("assistant-16.png"),
+                LargeImage = LoadIcon("assistant-32.png"),
             };
             panel.AddItem(btn);
             DiagLog("Ribbon panel created");
         }
         catch (Exception ex) { DiagLog($"Ribbon setup failed (non-fatal): {ex.Message}"); }
+    }
+
+    /// <summary>Load a TUM ribbon icon shipped next to the assembly (Resources\). Never throws.</summary>
+    private static BitmapImage? LoadIcon(string fileName)
+    {
+        try
+        {
+            var dir = System.IO.Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
+            var path = System.IO.Path.Combine(dir, "Resources", fileName);
+            if (!System.IO.File.Exists(path)) { DiagLog($"icon not found: {path}"); return null; }
+            var img = new BitmapImage();
+            img.BeginInit();
+            img.CacheOption = BitmapCacheOption.OnLoad;
+            img.UriSource = new Uri(path, UriKind.Absolute);
+            img.EndInit();
+            img.Freeze();
+            return img;
+        }
+        catch (Exception ex) { DiagLog($"icon load failed ({fileName}): {ex.Message}"); return null; }
     }
 
     /// <summary>

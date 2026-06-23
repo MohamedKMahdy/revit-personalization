@@ -43,6 +43,13 @@
     </None>
   </ItemGroup>
 
+  <!-- TUM-branded ribbon icon (loaded from disk next to the assembly at runtime). -->
+  <ItemGroup>
+    <None Include="Resources\*.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
   <!-- Post-build: deploy to the Revit Addins folder (close Revit first; it locks the DLL). -->
   <Target Name="DeployToRevit" AfterTargets="Build">
     <PropertyGroup>

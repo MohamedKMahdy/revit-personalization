@@ -1,0 +1,1776 @@
+[
+  {
+    "tool_name": "create_grid",
+    "plugin_command": "create_grid",
+    "summary": "Generates a rectangular grid system: XCount vertical grids and YCount horizontal grids with auto spacing, labels and extents.",
+    "when_to_use": "Use to lay out a column grid quickly by count + spacing rather than placing each grid line individually. Creates X-axis (vertical) and Y-axis (horizontal) grids in one call.",
+    "gotchas": "Parameters are FLAT (Execute calls parameters.ToObject<GridCreationInfo>() on the whole object — there is NO 'data' wrapper). All distances/positions/extents/elevation are MILLIMETRES (handler divides by 304.8). REQUIRED and validated (hard fail with 'Invalid grid parameters'): xCount>0, yCount>0, xSpacing>0, ySpacing>0, xNamingStyle and yNamingStyle in {'alphabetic','numeric'}, non-empty xStartLabel/yStartLabel, xExtentMin<xExtentMax, yExtentMin<yExtentMax. X-axis grids are VERTICAL lines at x = xStartPosition + i*xSpacing spanning yExtentMin..yExtentMax; Y-axis grids are HORIZONTAL lines at y = yStartPosition + i*ySpacing spanning xExtentMin..xExtentMax. Labels auto-generated: numeric parses the start label as an int (defaults 1 if unparseable); alphabetic uses the first character and rolls over A..Z,AA,AB... Duplicate grid names are auto-incremented (label, label1, label2...) and flagged wasRenamed. Defaults: xStartLabel 'A'/xNamingStyle 'alphabetic', yStartLabel '1'/yNamingStyle 'numeric', extents 0..50000mm, elevation 0, start positions 0. Timeout 10s. Requires an active document.",
+    "top_level_param_shape": "Execute reads parameters.ToObject<GridCreationInfo>() => FLAT keys at top level (no wrapper)",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "xCount": {
+          "type": "integer",
+          "description": "Number of X-axis grid lines (vertical grids, parallel to Y). Required, must be > 0.",
+          "minimum": 1
+        },
+        "xSpacing": {
+          "type": "number",
+          "description": "Spacing between X-axis grids in mm. Required, must be > 0."
+        },
+        "xStartLabel": {
+          "type": "string",
+          "description": "Starting label for X-axis grids (e.g. 'A' or '1').",
+          "default": "A"
+        },
+        "xNamingStyle": {
+          "type": "string",
+          "description": "Naming style for X-axis grids.",
+          "enum": [
+            "alphabetic",
+            "numeric"
+          ],
+          "default": "alphabetic"
+        },
+        "yCount": {
+          "type": "integer",
+          "description": "Number of Y-axis grid lines (horizontal grids, parallel to X). Required, must be > 0.",
+          "minimum": 1
+        },
+        "ySpacing": {
+          "type": "number",
+          "description": "Spacing between Y-axis grids in mm. Required, must be > 0."
+        },
+        "yStartLabel": {
+          "type": "string",
+          "description": "Starting label for Y-axis grids (e.g. '1' or 'A').",
+          "default": "1"
+        },
+        "yNamingStyle": {
+          "type": "string",
+          "description": "Naming style for Y-axis grids.",
+          "enum": [
+            "alphabetic",
+            "numeric"
+          ],
+          "default": "numeric"
+        },
+        "xExtentMin": {
+          "type": "number",
+          "description": "Min X extent in mm; defines the start of horizontal (Y-axis) grid lines. Must be < xExtentMax.",
+          "default": 0
+        },
+        "xExtentMax": {
+          "type": "number",
+          "description": "Max X extent in mm; defines the end of horizontal (Y-axis) grid lines.",
+          "default": 50000
+        },
+        "yExtentMin": {
+          "type": "number",
+          "description": "Min Y extent in mm; defines the start of vertical (X-axis) grid lines. Must be < yExtentMax.",
+          "default": 0
+        },
+        "yExtentMax": {
+          "type": "number",
+          "description": "Max Y extent in mm; defines the end of vertical (X-axis) grid lines.",
+          "default": 50000
+        },
+        "elevation": {
+          "type": "number",
+          "description": "Z elevation of all grid lines in mm.",
+          "default": 0
+        },
+        "xStartPosition": {
+          "type": "number",
+          "description": "X position of the first X-axis grid in mm.",
+          "default": 0
+        },
+        "yStartPosition": {
+          "type": "number",
+          "description": "Y position of the first Y-axis grid in mm.",
+          "default": 0
+        }
+      },
+      "required": [
+        "xCount",
+        "xSpacing",
+        "yCount",
+        "ySpacing"
+      ]
+    },
+    "plugin_params_example": {
+      "xCount": 5,
+      "xSpacing": 6000,
+      "xStartLabel": "A",
+      "xNamingStyle": "alphabetic",
+      "yCount": 4,
+      "ySpacing": 5000,
+      "yStartLabel": "1",
+      "yNamingStyle": "numeric",
+      "xExtentMin": 0,
+      "xExtentMax": 30000,
+      "yExtentMin": 0,
+      "yExtentMax": 25000,
+      "elevation": 0,
+      "xStartPosition": 0,
+      "yStartPosition": 0
+    },
+    "destructive": false,
+    "category": "create",
+    "result_note": "Returns AIResult<List<GridCreationResult>>: {success:bool, message:string, response:[{elementId:long, name, originalName, wasRenamed:bool, axis:'X'|'Y', position:double(mm)}]}. Validation failures return success=false with 'Validation failed: ...' and response=null. On exception success=false and a TaskDialog is shown."
+  },
+  {
+    "tool_name": "create_level",
+    "plugin_command": "create_level",
+    "summary": "Creates one or more building levels at given elevations, optionally generating floor plan and ceiling plan views for each.",
+    "when_to_use": "Use to add storeys/levels to the model. Each entry needs a name and an elevation in millimetres. By default a floor plan and ceiling plan view are auto-created per level. Requires an active document.",
+    "gotchas": "Elevation is MILLIMETRES (handler divides by 304.8 to feet). Top-level shape is {\"data\": [LevelInfo, ...]}; data is REQUIRED and must be non-null AND non-empty (handler throws if data==null || data.Count==0). IDEMPOTENT ON NAME: if a level with the same name (case-insensitive) already exists, no new level is created — the existing one is returned with alreadyExisted=true and a warning. SURPRISING/IGNORED: fields 'description', 'isMainLevel', 'computationHeight', 'viewPlanOffset', 'viewSectionOffset', 'viewElevationOffset' are deserialized but NOT used by the handler. Only 'name', 'elevation', 'isBuildingStory' (sets LEVEL_IS_BUILDING_STORY), 'createFloorPlan', and 'createCeilingPlan' have effect. createFloorPlan/createCeilingPlan default to true if omitted; view creation is skipped with a warning if no matching ViewFamilyType exists. Command times out after 15s.",
+    "top_level_param_shape": "parameters[\"data\"].ToObject<List<LevelInfo>>() => {data:[LevelInfo]} where each LevelInfo has JsonProperty keys name/elevation/description/isMainLevel/isBuildingStory/computationHeight/viewPlanOffset/viewSectionOffset/viewElevationOffset/createFloorPlan/createCeilingPlan",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "description": "REQUIRED, must be non-empty. Array of levels to create.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Level name. Used for the new level's name AND as the existence/dedup key (case-insensitive). If a level with this name exists, it is returned instead of creating a new one."
+              },
+              "elevation": {
+                "type": "number",
+                "description": "Level elevation in MILLIMETRES (converted /304.8 to feet)."
+              },
+              "description": {
+                "type": "string",
+                "description": "DESERIALIZED BUT IGNORED by the handler."
+              },
+              "isMainLevel": {
+                "type": "boolean",
+                "description": "DESERIALIZED BUT IGNORED by the handler. (Model default true.)"
+              },
+              "isBuildingStory": {
+                "type": "boolean",
+                "description": "Sets the LEVEL_IS_BUILDING_STORY parameter (1 if true, 0 if false). Model default true."
+              },
+              "computationHeight": {
+                "type": "number",
+                "description": "DESERIALIZED BUT IGNORED by the handler."
+              },
+              "viewPlanOffset": {
+                "type": "number",
+                "description": "DESERIALIZED BUT IGNORED by the handler."
+              },
+              "viewSectionOffset": {
+                "type": "number",
+                "description": "DESERIALIZED BUT IGNORED by the handler."
+              },
+              "viewElevationOffset": {
+                "type": "number",
+                "description": "DESERIALIZED BUT IGNORED by the handler."
+              },
+              "createFloorPlan": {
+                "type": "boolean",
+                "description": "If true (default), auto-creates a FloorPlan view for the level when a FloorPlan ViewFamilyType exists. Default true if omitted."
+              },
+              "createCeilingPlan": {
+                "type": "boolean",
+                "description": "If true (default), auto-creates a CeilingPlan view for the level when a CeilingPlan ViewFamilyType exists. Default true if omitted."
+              }
+            },
+            "required": [
+              "name",
+              "elevation"
+            ]
+          }
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "plugin_params_example": {
+      "data": [
+        {
+          "name": "Level 3",
+          "elevation": 7200,
+          "isBuildingStory": true,
+          "createFloorPlan": true,
+          "createCeilingPlan": false
+        }
+      ]
+    },
+    "destructive": false,
+    "category": "create",
+    "result_note": "Returns AIResult<List<LevelResultInfo>>: { Success:bool, Message:string (includes any per-level warnings), Response:[ { Id:int, UniqueId, Name, Elevation (mm), FloorPlanViewName, CeilingPlanViewName, AlreadyExisted:bool } ] }. Check AlreadyExisted to distinguish newly created vs pre-existing levels; new ElementId is Response[].Id."
+  },
+  {
+    "tool_name": "create_line_based_element",
+    "plugin_command": "create_line_based_element",
+    "summary": "Creates one or more line-based elements (walls, ducts, or any line-based family instance) from a 3D location line.",
+    "when_to_use": "Use to place walls, rectangular ducts, or line-based structural framing/family instances given a start/end point, height and base level. Batch-capable: pass an array to create many at once.",
+    "gotchas": "ALL lengths are MILLIMETRES (handler divides by 304.8 to feet). 'category' must be a Revit BuiltInCategory enum name (e.g. 'OST_Walls', 'OST_DuctCurves', 'OST_StructuralFraming'); dots are stripped before Enum.TryParse, so 'BuiltInCategory.OST_Walls' also parses for walls but NOT reliably for surfaces. If category resolves to INVALID the item is silently skipped (continue). 'baseLevel' is an ABSOLUTE elevation in mm, NOT a level name — handler calls FindNearestLevel(baseLevel/304.8) to snap to the closest existing level; there must be at least one Level in the doc. 'baseOffset' and 'height' in mm. If 'typeId' is -1/0 or not found, handler falls back to the first available wall type / first rectangular duct type / first active FamilySymbol of the category and appends a warning (does not fail). Ducts: requires a SupplyAir MEPSystemType to exist or duct is silently not created. 'thickness' and 'parameters' dictionary are deserialized but NOT applied by the handler (dead inputs for current code paths). Wall is created non-structural, no flip. Per-item failures are skipped, not fatal. Result.Response is a list of created integer ElementIds. Timeout 10s. Requires an active document.",
+    "top_level_param_shape": "Execute reads parameters[\"data\"].ToObject<List<LineElement>>() => {data:[LineElement]}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "description": "Array of line-based elements to create. Each item is created independently; failures are skipped.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "type": "string",
+                "description": "Revit BuiltInCategory enum name driving creation logic. 'OST_Walls' -> Wall.Create, 'OST_DuctCurves' -> Duct.Create, anything else -> generic line-based FamilyInstance of that category. Required; INVALID/unparseable items are silently skipped.",
+                "default": "INVALID"
+              },
+              "typeId": {
+                "type": "integer",
+                "description": "Revit ElementId (integer) of the WallType/DuctType/FamilySymbol to use. -1 or 0 means auto-select first available of the category. If a non-default id is not found, falls back to first available and adds a warning.",
+                "default": -1
+              },
+              "locationLine": {
+                "type": "object",
+                "description": "The path/location line of the element, in millimetres.",
+                "properties": {
+                  "p0": {
+                    "type": "object",
+                    "description": "Start point (mm).",
+                    "properties": {
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "z": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "x",
+                      "y",
+                      "z"
+                    ]
+                  },
+                  "p1": {
+                    "type": "object",
+                    "description": "End point (mm).",
+                    "properties": {
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "z": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "x",
+                      "y",
+                      "z"
+                    ]
+                  }
+                },
+                "required": [
+                  "p0",
+                  "p1"
+                ]
+              },
+              "thickness": {
+                "type": "number",
+                "description": "Thickness in mm. Deserialized but NOT applied by the current handler (no effect).",
+                "default": 0
+              },
+              "height": {
+                "type": "number",
+                "description": "Element height in mm (used for wall height and for computing top level/offset of family instances).",
+                "default": 0
+              },
+              "baseLevel": {
+                "type": "number",
+                "description": "ABSOLUTE base elevation in mm (NOT a level name). Handler snaps to nearest existing Level.",
+                "default": 0
+              },
+              "baseOffset": {
+                "type": "number",
+                "description": "Base offset in mm, added on top of baseLevel.",
+                "default": 0
+              },
+              "parameters": {
+                "type": "object",
+                "description": "Dictionary of extra parameter name -> double value. Deserialized but NOT applied by the current handler (no effect).",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              }
+            },
+            "required": [
+              "category",
+              "locationLine"
+            ]
+          }
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "plugin_params_example": {
+      "data": [
+        {
+          "category": "OST_Walls",
+          "typeId": -1,
+          "locationLine": {
+            "p0": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "p1": {
+              "x": 5000,
+              "y": 0,
+              "z": 0
+            }
+          },
+          "height": 3000,
+          "baseLevel": 0,
+          "baseOffset": 0,
+          "thickness": 200,
+          "parameters": {}
+        }
+      ]
+    },
+    "destructive": false,
+    "category": "create",
+    "result_note": "Returns AIResult<List<int>>: {success:bool, message:string, response:[int elementIds]}. message includes a count and any per-item warnings (e.g. typeId fallback). On exception success=false and a Revit TaskDialog is shown to the user. Read response for the created ElementIds; an empty list with success=true means all items were skipped."
+  },
+  {
+    "tool_name": "create_room",
+    "plugin_command": "create_room",
+    "summary": "Creates and places one or more rooms at given plan points on a level in the active Revit document.",
+    "when_to_use": "Use to place rooms inside already-enclosed boundaries (walls/room separation lines) on a floor plan. Each room needs an XY location in millimetres; the level is resolved from levelId, else from the point's Z, else the lowest level. Requires an active document with at least one level.",
+    "gotchas": "ALL coordinates and offsets are MILLIMETRES (handler divides by 304.8 to feet). Top-level shape is {\"data\": [RoomCreationInfo, ...]}; data is REQUIRED and must be a non-null array. Per-room only 'location' is effectively required (X,Y used for placement; Z only used to find nearest level when levelId<=0). SURPRISING/BROKEN: the model fields 'level' (elevation), 'height', 'phaseId', and 'options' are deserialized but NEVER used by the handler — only levelId is honored for level selection. Room number uniqueness is auto-enforced: a provided 'number' that collides gets a suffix, and an empty number gets the next free integer, so the assigned number may differ from what you sent (see result's number vs requestedNumber). If the location point is NOT inside an enclosed region, NewRoom returns null and that room is silently skipped (transaction rolled back, no error). 'limitOffset' only applied when > 0; 'baseOffset' applied when != 0; 'upperLimitId' applied when > 0. Duplicate-number Revit warnings are suppressed by a failure preprocessor. Command times out after 15s.",
+    "top_level_param_shape": "parameters[\"data\"].ToObject<List<RoomCreationInfo>>() => {data:[RoomCreationInfo]} where each RoomCreationInfo has JsonProperty keys location/name/number/level/levelId/height/phaseId/upperLimitId/limitOffset/baseOffset/department/comments/options",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "description": "REQUIRED. Array of rooms to create. Must be non-null (an empty array creates nothing).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "location": {
+                "type": "object",
+                "description": "Room insertion point in MILLIMETRES. X and Y are used to place the room on the level (UV); Z is only used to pick the nearest level when levelId is not provided. Must lie inside an enclosed boundary or the room is silently skipped.",
+                "properties": {
+                  "x": {
+                    "type": "number",
+                    "description": "X in mm"
+                  },
+                  "y": {
+                    "type": "number",
+                    "description": "Y in mm"
+                  },
+                  "z": {
+                    "type": "number",
+                    "description": "Z in mm (used only for nearest-level lookup when levelId<=0)"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "description": "Room name (default 'Room' if omitted/empty)."
+              },
+              "number": {
+                "type": "string",
+                "description": "Desired room number. If it collides with an existing number it is auto-suffixed; if omitted the next free integer is assigned. The actually-assigned value is returned as 'number'."
+              },
+              "level": {
+                "type": "number",
+                "description": "Level elevation in mm. DESERIALIZED BUT IGNORED by the handler — has no effect."
+              },
+              "levelId": {
+                "type": "integer",
+                "description": "Revit ElementId (int) of the level to host the room. The only level selector actually honored; if <=0 the level is inferred from location.Z, else the lowest level is used."
+              },
+              "height": {
+                "type": "number",
+                "description": "Room height in mm. DESERIALIZED BUT IGNORED by the handler."
+              },
+              "phaseId": {
+                "type": "integer",
+                "description": "Phase ElementId. DESERIALIZED BUT IGNORED by the handler."
+              },
+              "upperLimitId": {
+                "type": "integer",
+                "description": "Upper-limit level ElementId. Applied to ROOM_UPPER_LEVEL only when > 0."
+              },
+              "limitOffset": {
+                "type": "number",
+                "description": "Offset from upper limit in mm (converted /304.8). Applied only when > 0."
+              },
+              "baseOffset": {
+                "type": "number",
+                "description": "Offset from base level in mm (converted /304.8). Applied only when != 0."
+              },
+              "department": {
+                "type": "string",
+                "description": "Department parameter value (optional)."
+              },
+              "comments": {
+                "type": "string",
+                "description": "Instance Comments parameter value (optional)."
+              },
+              "options": {
+                "type": "object",
+                "description": "Free-form dictionary. DESERIALIZED BUT IGNORED by the handler.",
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "location"
+            ]
+          }
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "plugin_params_example": {
+      "data": [
+        {
+          "location": {
+            "x": 2000,
+            "y": 3000,
+            "z": 0
+          },
+          "name": "Office",
+          "number": "101",
+          "levelId": 311,
+          "department": "Admin",
+          "comments": "Corner office",
+          "baseOffset": 0,
+          "limitOffset": 2700
+        }
+      ]
+    },
+    "destructive": false,
+    "category": "create",
+    "result_note": "Returns AIResult<List<RoomResultInfo>>: { Success:bool, Message:string, Response:[ { Id:int, UniqueId:string, Name, Number (actually assigned), RequestedNumber (what you sent), LevelName, Area, Perimeter } ] }. Success is true even if some/all rooms were skipped (skipped rooms simply do not appear in Response — compare Response length to data length). Read created room ElementIds from Response[].Id."
+  },
+  {
+    "tool_name": "create_structural_framing_system",
+    "plugin_command": "create_structural_framing_system",
+    "summary": "Creates a Revit BeamSystem over a rectangular boundary with evenly spaced beams at a fixed distance.",
+    "when_to_use": "Use to fill a rectangular bay with parallel structural beams (a BeamSystem) instead of placing each beam manually. Specify the boundary, beam direction edge, spacing and justification.",
+    "gotchas": "Parameters are FLAT (Execute calls parameters.ToObject<StructuralFramingSystemCreationInfo>() on the whole object — NO 'data' wrapper). All coordinates/spacing/elevation are MILLIMETRES (handler divides by 304.8). REQUIRED & validated (hard fail): xMin<xMax, yMin<yMax, spacing>0, directionEdge in {bottom,right,top,left} (case-insensitive), layoutRule == 'fixed_distance' (ONLY supported value in v1), justify in {beginning,center,end,directionline}, non-empty levelName. SURPRISING/BROKEN: although 'levelName' is REQUIRED by validation, the handler IGNORES it and instead picks the level via FindNearestLevel(elevation/304.8) (the ResolveLevel/auto-create-level helpers are DEAD CODE never called). So the beam system lands on whichever existing level is nearest to 'elevation', not on the named level — set 'elevation' to control the level. The project MUST have at least one structural framing FamilySymbol loaded (OST_StructuralFraming) or it fails fast with success=false. Works best with a FloorPlan/EngineeringPlan view active (otherwise a warning is added). 'beamTypeName' is a case-insensitive substring match against family/type name; if empty or unmatched it falls back to first active (then first) beam type. directionEdge selects which of the 4 rectangle edges (built in order bottom=0,right=1,top=2,left=3) defines beam direction. 'elevation' is applied as a per-beam Z_OFFSET_VALUE relative to the chosen level. spacing>boundary dimension is only a soft warning, not a failure. Timeout 15s (beam creation is slower). Requires an active document.",
+    "top_level_param_shape": "Execute reads parameters.ToObject<StructuralFramingSystemCreationInfo>() => FLAT keys at top level (no wrapper)",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "levelName": {
+          "type": "string",
+          "description": "Name of the level to place the beam system on. REQUIRED by validation but IGNORED by the handler (level is chosen by nearest to 'elevation' instead)."
+        },
+        "xMin": {
+          "type": "number",
+          "description": "Min X of the rectangular boundary in mm. Must be < xMax."
+        },
+        "xMax": {
+          "type": "number",
+          "description": "Max X of the rectangular boundary in mm."
+        },
+        "yMin": {
+          "type": "number",
+          "description": "Min Y of the rectangular boundary in mm. Must be < yMax."
+        },
+        "yMax": {
+          "type": "number",
+          "description": "Max Y of the rectangular boundary in mm."
+        },
+        "directionEdge": {
+          "type": "string",
+          "description": "Which rectangle edge defines the beam direction.",
+          "enum": [
+            "bottom",
+            "right",
+            "top",
+            "left"
+          ],
+          "default": "bottom"
+        },
+        "layoutRule": {
+          "type": "string",
+          "description": "Beam layout rule. v1 supports only 'fixed_distance'.",
+          "enum": [
+            "fixed_distance"
+          ],
+          "default": "fixed_distance"
+        },
+        "spacing": {
+          "type": "number",
+          "description": "Spacing between beams in mm. Required, must be > 0."
+        },
+        "justify": {
+          "type": "string",
+          "description": "Beam justification within the boundary.",
+          "enum": [
+            "beginning",
+            "center",
+            "end",
+            "directionline"
+          ],
+          "default": "center"
+        },
+        "beamTypeName": {
+          "type": "string",
+          "description": "Optional beam family/type name (case-insensitive substring match). Auto-selects first available beam type if omitted or unmatched."
+        },
+        "elevation": {
+          "type": "number",
+          "description": "Elevation in mm. Determines which existing level is used (nearest) AND is applied as a per-beam Z offset from that level.",
+          "default": 0
+        },
+        "is3d": {
+          "type": "boolean",
+          "description": "Whether to create a 3D beam system.",
+          "default": false
+        }
+      },
+      "required": [
+        "levelName",
+        "xMin",
+        "xMax",
+        "yMin",
+        "yMax",
+        "spacing"
+      ]
+    },
+    "plugin_params_example": {
+      "levelName": "Level 1",
+      "xMin": 0,
+      "xMax": 6000,
+      "yMin": 0,
+      "yMax": 5000,
+      "directionEdge": "bottom",
+      "layoutRule": "fixed_distance",
+      "spacing": 1500,
+      "justify": "center",
+      "beamTypeName": "",
+      "elevation": 0,
+      "is3d": false
+    },
+    "destructive": false,
+    "category": "create",
+    "result_note": "Returns AIResult<StructuralFramingSystemCreationResult>: {success:bool, message:string, response:{beamSystemId:long, beamIds:[long], beamCount:int, actualSpacing:double(mm), usedBeamTypeName:string, levelName:string}}. Validation or missing-family failures return success=false with response=null (and a TaskDialog). message includes a multi-line summary plus warnings (e.g. which level was actually used)."
+  },
+  {
+    "tool_name": "create_surface_based_element",
+    "plugin_command": "create_surface_based_element",
+    "summary": "Creates one or more surface-based elements (floors, roofs, ceilings) from a closed boundary loop.",
+    "when_to_use": "Use to place floors, flat footprint roofs, or ceilings given a closed outer boundary of line segments, a base level and an offset. Batch-capable via the data array.",
+    "gotchas": "ALL lengths are MILLIMETRES (handler divides by 304.8). 'category' must be a Revit BuiltInCategory enum name; handler strips both '.' and the literal 'BuiltInCategory' substring before Enum.TryParse, so 'OST_Floors', 'OST_Roofs', 'OST_Ceilings' work. INVALID category items are silently skipped. Only 'boundary.outerLoop' is used to build the curve loop; 'innerLoops' (holes) are DESERIALIZED BUT COMPLETELY IGNORED. The outer loop must be a closed, ordered sequence of JZLine segments (CurveLoop.Create will throw if not closed/contiguous, failing that item). 'thickness' is DESERIALIZED BUT NOT APPLIED to the element — it is only used to compute an unused topLevel/topOffset; actual thickness comes from the floor/roof/ceiling TYPE. 'baseLevel' is an ABSOLUTE elevation in mm (snapped to nearest Level via FindNearestLevel), NOT a level name. 'baseOffset' in mm is applied as the height-above-level offset parameter. If 'typeId' is -1/0 or not found, falls back to first available type of the category (+warning). Floors use Floor.Create (Revit 2023+) else NewFloor; Roofs are created as flat FootPrintRoof (all edges set non-sloped); Ceilings require Revit 2022+ (older versions add a warning and create nothing). 'parameters' dictionary is deserialized but NOT applied. Per-item failures skipped. Timeout 10s. Requires an active document with at least one Level.",
+    "top_level_param_shape": "Execute reads parameters[\"data\"].ToObject<List<SurfaceElement>>() => {data:[SurfaceElement]}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "array",
+          "description": "Array of surface-based elements to create. Each item is independent; failures are skipped.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "category": {
+                "type": "string",
+                "description": "Revit BuiltInCategory enum name: 'OST_Floors', 'OST_Roofs', or 'OST_Ceilings'. Required; INVALID/unparseable items are silently skipped.",
+                "default": "INVALID"
+              },
+              "typeId": {
+                "type": "integer",
+                "description": "Revit ElementId of the FloorType/RoofType/CeilingType (or FamilySymbol) to use. -1 or 0 = auto-select first available of the category; unknown ids fall back with a warning.",
+                "default": -1
+              },
+              "boundary": {
+                "type": "object",
+                "description": "Closed boundary face. Only outerLoop is used; innerLoops are ignored.",
+                "properties": {
+                  "outerLoop": {
+                    "type": "array",
+                    "description": "Ordered, closed list of boundary line segments (mm). Must form a contiguous closed loop or the item fails.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "p0": {
+                          "type": "object",
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            },
+                            "z": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "x",
+                            "y",
+                            "z"
+                          ]
+                        },
+                        "p1": {
+                          "type": "object",
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            },
+                            "z": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "x",
+                            "y",
+                            "z"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "p0",
+                        "p1"
+                      ]
+                    }
+                  },
+                  "innerLoops": {
+                    "type": "array",
+                    "description": "List of inner hole loops. DESERIALIZED BUT IGNORED by the handler.",
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "outerLoop"
+                ]
+              },
+              "thickness": {
+                "type": "number",
+                "description": "Thickness in mm. DESERIALIZED BUT NOT APPLIED (actual thickness comes from the element type).",
+                "default": 0
+              },
+              "baseLevel": {
+                "type": "number",
+                "description": "ABSOLUTE base elevation in mm (snapped to nearest Level), NOT a level name.",
+                "default": 0
+              },
+              "baseOffset": {
+                "type": "number",
+                "description": "Height-above-level offset in mm, applied to the created element.",
+                "default": 0
+              },
+              "parameters": {
+                "type": "object",
+                "description": "Extra parameter name -> double. Deserialized but NOT applied.",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              }
+            },
+            "required": [
+              "category",
+              "boundary"
+            ]
+          }
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "plugin_params_example": {
+      "data": [
+        {
+          "category": "OST_Floors",
+          "typeId": -1,
+          "boundary": {
+            "outerLoop": [
+              {
+                "p0": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "p1": {
+                  "x": 5000,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              {
+                "p0": {
+                  "x": 5000,
+                  "y": 0,
+                  "z": 0
+                },
+                "p1": {
+                  "x": 5000,
+                  "y": 4000,
+                  "z": 0
+                }
+              },
+              {
+                "p0": {
+                  "x": 5000,
+                  "y": 4000,
+                  "z": 0
+                },
+                "p1": {
+                  "x": 0,
+                  "y": 4000,
+                  "z": 0
+                }
+              },
+              {
+                "p0": {
+                  "x": 0,
+                  "y": 4000,
+                  "z": 0
+                },
+                "p1": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              }
+            ],
+            "innerLoops": []
+          },
+          "thickness": 200,
+          "baseLevel": 0,
+          "baseOffset": 0
+        }
+      ]
+    },
+    "destructive": false,
+    "category": "create",
+    "result_note": "Returns AIResult<List<int>>: {success:bool, message:string, response:[int elementIds]}. message has a created count plus warnings (type fallback, unsupported ceiling on old Revit). On exception success=false and a TaskDialog is shown. Read response for created ElementIds."
+  },
+  {
+    "tool_name": "duplicate_element",
+    "plugin_command": "duplicate_element",
+    "summary": "Copies a single Revit element by id, optionally translating the copy by (dx,dy,dz) given in millimetres, and returns the new element's id.",
+    "when_to_use": "Use to duplicate one element, optionally offset in space (e.g. copy a piece of furniture 1200mm to the right). For copying in place, omit/zero the offsets.",
+    "gotchas": "UNITS: dx/dy/dz are MILLIMETRES at the JSON boundary and are converted to Revit internal feet via MM_TO_FEET = 1/304.8 in the handler. Single element only (elementId is one int, not a list). elementId is REQUIRED — Execute throws ArgumentException('elementId is required.') if missing; note it is read with Value<int>() so a non-integer or null fails. dx/dy/dz are OPTIONAL, each defaulting to 0 (copy in place). Uses ElementTransformUtils.CopyElement, so normal Revit copy restrictions apply (some elements can't be copied / may produce multiple ids — only the FIRST copied id is returned). Wrapped in a 'Duplicate Element' transaction that rolls back on exception. Execution serialized by a static lock. 15s timeout. NOT destructive (additive).",
+    "top_level_param_shape": "Flat keys read individually: parameters[\"elementId\"].Value<int>() (required), parameters[\"dx\"|\"dy\"|\"dz\"].Value<double>() (optional, default 0). Shape: {elementId:int, dx?:number, dy?:number, dz?:number}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "elementId": {
+          "type": "integer",
+          "description": "REQUIRED. Integer Revit ElementId of the single element to duplicate."
+        },
+        "dx": {
+          "type": "number",
+          "description": "Optional X translation of the copy in MILLIMETRES. Default 0."
+        },
+        "dy": {
+          "type": "number",
+          "description": "Optional Y translation of the copy in MILLIMETRES. Default 0."
+        },
+        "dz": {
+          "type": "number",
+          "description": "Optional Z translation of the copy in MILLIMETRES. Default 0."
+        }
+      },
+      "required": [
+        "elementId"
+      ]
+    },
+    "plugin_params_example": {
+      "elementId": 184327,
+      "dx": 1200,
+      "dy": 0,
+      "dz": 0
+    },
+    "destructive": false,
+    "category": "create",
+    "result_note": "Returns the handler's AIResult<int> = { Success:bool, Message:string, Response:int }. On success Response is the new element's integer id (Success true only when newId>0); Message like 'Duplicated element 184327 → 184988.'. On not-found / copy failure Success=false, Response is -1 or 0, Message carries the reason. On timeout the command throws TimeoutException."
+  },
+  {
+    "tool_name": "place_and_configure",
+    "plugin_command": "place_and_configure",
+    "summary": "Place one or more family instances at given XYZ points on a level and set instance parameters in a single transaction group.",
+    "when_to_use": "Use to instantiate loadable-family components (furniture, fixtures, equipment, generic models) at known coordinates and immediately configure their instance parameters. Good for batch placement where each item names its family/type, location, level, and a list of name/value parameter overrides.",
+    "gotchas": "Coordinates x/y/z are MILLIMETRES (handler multiplies by 1/304.8 to feet). Family/type matching is a substring-free exact-name match BUT empty strings act as wildcards: an empty familyName matches ANY family and an empty typeName matches ANY type, so {familyName:'', typeName:''} silently places the FIRST FamilySymbol found in the document. If levelName is empty or not found, it falls back to the nearest level by Z (it does NOT error). Parameters whose target param is missing or read-only are silently skipped (no error); only String/Integer/Double/ElementId storage types are handled (numbers parsed with InvariantCulture; doubles set in Revit internal units = feet, NOT mm). Requires an active document/UIDocument. Placement uses doc.CreateInstance(symbol, locationPoint, baseLevel) so non-point-hosted families are assumed. Whole batch runs in one TransactionGroup that is Assimilated; any single failure throws and aborts (group not assimilated). Command-side timeout 60s. Each placement's nested 'parameters' is an array of {name,value} objects, NOT a map.",
+    "top_level_param_shape": "Execute reads parameters[\"placements\"] as a JArray and hand-maps each item's camelCase keys (familyName,typeName,x,y,z,levelName,parameters[]) into List<PlacementItemData>. Shape: {placements:[{familyName,typeName,x,y,z,levelName,parameters:[{name,value}]}]}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "placements": {
+          "type": "array",
+          "description": "Array of family instances to place and configure. Required, must be non-empty.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "familyName": {
+                "type": "string",
+                "description": "Exact Revit family name to place (e.g. 'Desk'). Empty string acts as a wildcard matching ANY family - avoid leaving empty unless you intend to match the first available type."
+              },
+              "typeName": {
+                "type": "string",
+                "description": "Exact family type/symbol name (e.g. '1525x762mm'). Empty string acts as a wildcard matching ANY type of the matched family."
+              },
+              "x": {
+                "type": "number",
+                "description": "X coordinate in MILLIMETRES. Default 0 if omitted."
+              },
+              "y": {
+                "type": "number",
+                "description": "Y coordinate in MILLIMETRES. Default 0 if omitted."
+              },
+              "z": {
+                "type": "number",
+                "description": "Z (elevation) coordinate in MILLIMETRES. Default 0 if omitted. Also used to pick nearest level when levelName is blank."
+              },
+              "levelName": {
+                "type": "string",
+                "description": "Exact level name to host the instance (e.g. 'Level 1'). If empty or not found, the level nearest to z is used."
+              },
+              "parameters": {
+                "type": "array",
+                "description": "Optional instance parameter overrides applied after placement. Missing or read-only params are silently skipped.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "Parameter display name as found via Element.LookupParameter."
+                    },
+                    "value": {
+                      "description": "Parameter value; coerced to the param's storage type. For Double-storage params the value is in Revit internal units (feet), not mm."
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "value"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "familyName",
+              "typeName",
+              "x",
+              "y",
+              "z",
+              "levelName"
+            ]
+          }
+        }
+      },
+      "required": [
+        "placements"
+      ]
+    },
+    "plugin_params_example": {
+      "placements": [
+        {
+          "familyName": "Desk",
+          "typeName": "1525x762mm",
+          "x": 3000,
+          "y": 1500,
+          "z": 0,
+          "levelName": "Level 1",
+          "parameters": [
+            {
+              "name": "Comments",
+              "value": "Workstation A"
+            }
+          ]
+        },
+        {
+          "familyName": "Chair-Task",
+          "typeName": "Default",
+          "x": 3000,
+          "y": 2200,
+          "z": 0,
+          "levelName": "Level 1",
+          "parameters": []
+        }
+      ]
+    },
+    "destructive": false,
+    "category": "create",
+    "result_note": "Returns AIResult<List<int>>: { Success:bool, Message:string, Response:[int] } where Response is the list of created FamilyInstance element ids (int). Success=false with Message on any failure (e.g. family type not found); on failure no ids are returned and the transaction group is not assimilated."
+  },
+  {
+    "tool_name": "color_splash",
+    "plugin_command": "color_splash",
+    "summary": "Colors all elements of a Revit category in the ACTIVE view by grouping them on a parameter value and applying a distinct surface/line color override per group.",
+    "when_to_use": "Use to visually differentiate elements of one category in the current view by a shared parameter (e.g. color all Walls by their 'Type Name', or all Doors by 'Level'). Produces a color-coded legend-style override in the active view only.",
+    "gotchas": "UNITS: none (RGB ints 0-255). REQUIRED: categoryName and parameterName (Execute throws ArgumentException if either is missing/null). categoryName is matched case-insensitively against doc.Settings.Categories Name (a localized/display name like 'Walls', 'Doors' — NOT a BuiltInCategory id). parameterName is looked up first as an instance parameter then as a type parameter; elements lacking it are grouped under 'None'. Color selection precedence: if customColors is provided and non-empty it is used FIRST (assigned to parameter-value groups in arbitrary dictionary order, one color per group; groups beyond the provided color count get random colors); else if useGradient=true AND more than 1 group, a blue→red gradient is generated; otherwise random colors (each channel 30-200). So useGradient is IGNORED whenever customColors is supplied, and also ignored when there is only one group. Operates on the ACTIVE view via temporary visibility overrides (SetElementОverrides) — fails with success:false if the active view returns CanUseTemporaryVisibilityModes()==false (e.g. schedules/some view types). Only view-independent, non-element-type instances visible in the active view are colored. NOT destructive to model geometry but it DOES write graphic overrides into the active view inside a 'Color Splash' transaction. 20s timeout. Result is returned directly (the handler's ColoringResults object), not wrapped in AIResult.",
+    "top_level_param_shape": "Flat keys read individually off the JObject: parameters[\"categoryName\"].ToString(), parameters[\"parameterName\"].ToString(), parameters[\"useGradient\"].ToObject<bool>() (optional), parameters[\"customColors\"] as JArray (optional). Shape: {categoryName:string, parameterName:string, useGradient?:bool, customColors?:[{r,g,b}]}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "categoryName": {
+          "type": "string",
+          "description": "REQUIRED. Display name of the Revit category to color (case-insensitive match against doc.Settings.Categories), e.g. 'Walls', 'Doors', 'Windows', 'Rooms'. Not a BuiltInCategory enum id."
+        },
+        "parameterName": {
+          "type": "string",
+          "description": "REQUIRED. Name of the parameter whose value groups elements (instance parameter preferred, falls back to type parameter), e.g. 'Type Name', 'Level', 'Comments', 'Fire Rating'. Elements without a value are grouped as 'None'."
+        },
+        "useGradient": {
+          "type": "boolean",
+          "description": "Optional, default false. If true AND more than one group AND no customColors given, generate a blue->red gradient across groups. Ignored when customColors is provided or when there is only one group."
+        },
+        "customColors": {
+          "type": "array",
+          "description": "Optional. Explicit RGB colors assigned one-per-group in arbitrary group order. If fewer colors than groups, remaining groups get random colors. Overrides useGradient.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "r": {
+                "type": "integer",
+                "description": "Red 0-255"
+              },
+              "g": {
+                "type": "integer",
+                "description": "Green 0-255"
+              },
+              "b": {
+                "type": "integer",
+                "description": "Blue 0-255"
+              }
+            },
+            "required": [
+              "r",
+              "g",
+              "b"
+            ]
+          }
+        }
+      },
+      "required": [
+        "categoryName",
+        "parameterName"
+      ]
+    },
+    "plugin_params_example": {
+      "categoryName": "Walls",
+      "parameterName": "Type Name",
+      "useGradient": false,
+      "customColors": [
+        {
+          "r": 220,
+          "g": 30,
+          "b": 30
+        },
+        {
+          "r": 30,
+          "g": 120,
+          "b": 220
+        },
+        {
+          "r": 30,
+          "g": 200,
+          "b": 90
+        }
+      ]
+    },
+    "destructive": false,
+    "category": "annotate",
+    "result_note": "Returns the raw ColoringResults object (NOT wrapped in AIResult). On success: { success:true, totalElements:int, coloredGroups:int, results:[ { parameterValue:string, count:int, color:{r,g,b}, elementIds:[string] } ] }. On failure: { success:false, message:string } (e.g. category not found, no elements, view can't use temporary visibility). On timeout the command throws TimeoutException."
+  },
+  {
+    "tool_name": "create_dimensions",
+    "plugin_command": "create_dimensions",
+    "summary": "Creates one or more linear dimension annotations in a Revit view, either between specified elements' faces or by auto-picking geometry near two given points; coordinates in millimetres.",
+    "when_to_use": "When you want to add dimension annotations to a view - e.g. dimension the distance between two walls, or place a dimension line between two points where it should snap to nearby geometry. Provide elementIds for reliable face-to-face dimensioning.",
+    "gotchas": "WRITE/transaction command - each dimension runs in its own transaction (rolled back on error). Points (startPoint, endPoint, linePoint) are in MILLIMETRES (handler converts mm->feet via /304.8). NOTE: although DimensionCreationInfo has startPoint/endPoint/linePoint/dimensionType/dimensionStyleId/viewId/options fields, the handler IGNORES dimensionType entirely (always creates a linear Line.CreateBound dimension) and IGNORES linePoint for actual placement (NewDimension uses the line from start->end; linePoint is computed but unused except as a default). Two modes: (a) if elementIds is non-empty, it picks the best-aligned vertical face reference per element (needs >=2 valid references or nothing is created) - works for Wall and FamilyInstance, falls back to a whole-element Reference otherwise; (b) if elementIds is empty, it tries FindReferenceAtPoint near startPoint/endPoint using a crude closest-LocationPoint/Curve search with a 5-FOOT tolerance - fragile and often fails silently (dimension simply not created, no error). dimensionStyleId>0 applies a DimensionType; <=0 (default -1) leaves default style. viewId>0 uses that view, else ActiveView. options is a dict of {paramName: value} set on the dimension AFTER creation: double values are treated as mm and converted to feet, int/string set as-is; unknown params silently skipped. dimensionStyleId/viewId default to -1; FindReferenceAtPoint and GetReferences can pop TaskDialog message boxes (\"Debug\"/\"Error\") on the Revit UI thread, which can BLOCK the headless/automation flow. 20s timeout.",
+    "top_level_param_shape": "parameters[\"dimensions\"].ToObject<List<DimensionCreationInfo>>(); must be a non-empty array or ArgumentException. => {dimensions:[DimensionCreationInfo]} where each item mirrors the [JsonProperty] keys of DimensionCreationInfo.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "dimensions": {
+          "type": "array",
+          "description": "Non-empty list of dimensions to create. Each item is a DimensionCreationInfo.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "startPoint": {
+                "type": "object",
+                "description": "Dimension line start point in MILLIMETRES (JZPoint).",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "z": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              },
+              "endPoint": {
+                "type": "object",
+                "description": "Dimension line end point in MILLIMETRES (JZPoint).",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "z": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              },
+              "linePoint": {
+                "type": "object",
+                "description": "Optional location of the dimension line in MILLIMETRES (JZPoint). NOTE: computed but effectively unused by the handler - placement is driven by start/end. Defaults to null.",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "z": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              },
+              "elementIds": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "Optional integer ElementIds to dimension between. If non-empty, the handler picks face references per element (needs >=2 valid references). If empty, the handler auto-picks geometry near start/end points (fragile, 5ft tolerance). Defaults to empty list."
+              },
+              "dimensionType": {
+                "type": "string",
+                "description": "Dimension type label (default \"Linear\"). IGNORED by the handler - it always creates a linear dimension."
+              },
+              "dimensionStyleId": {
+                "type": "integer",
+                "description": "DimensionType (style) ElementId to apply. Use <=0 (default -1) to keep the default style.",
+                "default": -1
+              },
+              "viewId": {
+                "type": "integer",
+                "description": "ElementId of the view to create the dimension in. Use <=0 (default -1) to use the active view.",
+                "default": -1
+              },
+              "options": {
+                "type": "object",
+                "description": "Optional map of {parameterName: value} applied to the created dimension after creation. Double values are interpreted as MILLIMETRES and converted to feet; int/string set as-is; unknown params silently skipped.",
+                "additionalProperties": true
+              }
+            },
+            "required": [
+              "startPoint",
+              "endPoint"
+            ]
+          }
+        }
+      },
+      "required": [
+        "dimensions"
+      ]
+    },
+    "plugin_params_example": {
+      "dimensions": [
+        {
+          "startPoint": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "endPoint": {
+            "x": 5000,
+            "y": 0,
+            "z": 0
+          },
+          "elementIds": [
+            354729,
+            354812
+          ],
+          "dimensionStyleId": -1,
+          "viewId": -1,
+          "options": {}
+        }
+      ]
+    },
+    "destructive": false,
+    "category": "annotate",
+    "result_note": "AIResult<List<int>>: { Success:bool, Message:string, Response:[int] } where Response is the list of created Dimension ElementIds. A successful call can still return an empty Response list if no valid references were found (no dimension created); check Response length, not just Success. On error Success=false and a TaskDialog may have been shown on the Revit UI."
+  },
+  {
+    "tool_name": "tag_rooms",
+    "plugin_command": "tag_rooms",
+    "summary": "Tags rooms in the active floor/ceiling plan view (or specified room ids), auto-switching to a suitable floor plan if needed.",
+    "when_to_use": "Use to place room tags. With no args it tags all rooms in the current view; pass roomIds to tag specific rooms; pass tagTypeId to force a specific room tag family symbol. The handler auto-switches the active view to a matching FloorPlan for the rooms' level if the current view cannot host room tags.",
+    "gotchas": "ALL parameters are FLAT and OPTIONAL (no 'data' wrapper). Keys: useLeader (bool, default false), tagTypeId (string — a numeric ElementId as a STRING, e.g. \"123456\"), roomIds (array of int Revit ElementIds). No coordinates are passed in (tags are auto-placed at room center). If tagTypeId is null/empty/invalid or not an OST_RoomTags symbol, the FIRST available room tag type in the project is used. If no room tag family exists, returns success=false. Rooms with Area<=0 (unplaced/unenclosed) are skipped; rooms already tagged in the view are skipped (reported under skippedRooms). May change the active view as a side effect. Command times out after 15s. tagTypeId MUST be sent as a string, not an int.",
+    "top_level_param_shape": "Flat reads: parameters[\"useLeader\"].ToObject<bool>(), parameters[\"tagTypeId\"].ToString(), parameters[\"roomIds\"].ToObject<List<int>>() => {useLeader, tagTypeId, roomIds}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "useLeader": {
+          "type": "boolean",
+          "description": "Whether created room tags have a leader line. Optional, default false."
+        },
+        "tagTypeId": {
+          "type": "string",
+          "description": "ElementId of the room tag FamilySymbol to use, passed as a STRING (e.g. \"123456\"). Optional; if omitted/invalid/not a room tag, the first available room tag type is used."
+        },
+        "roomIds": {
+          "type": "array",
+          "description": "Optional list of room Revit ElementIds (ints) to tag. If omitted, all rooms in the (possibly auto-switched) active view are tagged.",
+          "items": {
+            "type": "integer"
+          }
+        }
+      },
+      "required": []
+    },
+    "plugin_params_example": {
+      "useLeader": false,
+      "tagTypeId": "123456",
+      "roomIds": [
+        311045,
+        311052
+      ]
+    },
+    "destructive": false,
+    "category": "annotate",
+    "result_note": "Returns an anonymous object: on success { success:true, totalRooms:int, taggedRooms:int, skippedCount:int, tags:[{tagId,roomId,roomName,roomNumber,location:{x,y,z in mm}}], skippedRooms:[...]|null, errors:[...]|null, viewSwitched:bool, message }. On failure { success:false, message }. Tag/room ids are strings inside tags[]."
+  },
+  {
+    "tool_name": "tag_walls",
+    "plugin_command": "tag_walls",
+    "summary": "Tags every wall visible in the current active view at each wall's midpoint, horizontally oriented.",
+    "when_to_use": "Use to bulk-tag all walls in the currently active view. There is no way to pass specific wall ids or a view — it always operates on doc.ActiveView. Optionally force a tag type and toggle leaders.",
+    "gotchas": "ALL parameters are FLAT and OPTIONAL (no 'data' wrapper). Keys: useLeader (bool, default false), tagTypeId (string — numeric ElementId as a STRING). NO roomIds/wallIds/coordinates — it always tags ALL walls in doc.ActiveView; there is NO way to scope to specific walls. Tags are placed at each wall's curve midpoint, TagOrientation.Horizontal. If tagTypeId is empty/invalid, it falls back to the first OST_WallTags symbol, then to the first OST_MultiCategoryTags symbol; if none exist, returns success=false. The handler has #if REVIT2024_OR_GREATER and #else branches that are functionally identical (only Id API differs). Walls without a LocationCurve are silently skipped. Shorter timeout: 10s. tagTypeId MUST be a string. NOTE: result 'location' x/y/z here are in FEET (raw Revit XYZ, NOT converted to mm), unlike tag_rooms which returns mm.",
+    "top_level_param_shape": "Flat reads: parameters[\"useLeader\"].ToObject<bool>(), parameters[\"tagTypeId\"].ToString() => {useLeader, tagTypeId}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "useLeader": {
+          "type": "boolean",
+          "description": "Whether created wall tags have a leader line. Optional, default false."
+        },
+        "tagTypeId": {
+          "type": "string",
+          "description": "ElementId of the wall tag (or multi-category tag) FamilySymbol, passed as a STRING (e.g. \"123456\"). Optional; if omitted/invalid, the first wall tag, then first multi-category tag, is used."
+        }
+      },
+      "required": []
+    },
+    "plugin_params_example": {
+      "useLeader": true,
+      "tagTypeId": "123456"
+    },
+    "destructive": false,
+    "category": "annotate",
+    "result_note": "Returns an anonymous object: on success { success:true, totalWalls:int, taggedWalls:int, tags:[{id, wallId, wallName, location:{x,y,z}}], errors:[...]|null }. On failure { success:false, message }. WARNING: location x/y/z are raw Revit FEET, not millimetres. Tag/wall ids are strings."
+  },
+  {
+    "tool_name": "operate_element",
+    "plugin_command": "operate_element",
+    "summary": "Performs a view/selection/visibility/graphics action (select, section box, set color, set transparency, delete, hide, isolate, unhide, reset) on a set of elements identified by integer ElementIds.",
+    "when_to_use": "Use as a multi-purpose verb to act on a known set of elements by id: select them, zoom/section-box to them in 3D, recolor or set transparency in the active view, delete them, or manage their hide/isolate visibility state in the active view.",
+    "gotchas": "UNITS: none for ids; transparencyValue is 0-100 (clamped); colorValue is RGB ints 0-255 (clamped, <3 entries falls back to red 255,0,0). The top-level wire param is a SINGLE object under key 'data' (Execute does parameters[\"data\"].ToObject<OperationSetting>()). action is parsed case-insensitively via Enum.TryParse against ElementOperationType — VALID values: Select, SelectionBox, SetColor, SetTransparency, Delete, Hide, TempHide, Isolate, Unhide, ResetIsolate (default 'Select' if omitted). Unknown action -> throws. elementIds must be non-empty EXCEPT when action is 'resetisolate' (the only action allowed with an empty list). SelectionBox requires a 3D view: if the active view isn't 3D it searches for a 3D view whose name contains '{3D}' or 'Default 3D', activates it, and throws if none found; section box is padded by 1.0 FOOT. SetColor/SetTransparency/Hide/TempHide/Isolate/Unhide/ResetIsolate apply to doc.ActiveView only. DESTRUCTIVE: action 'Delete' permanently deletes the elements (and their dependents) via doc.Delete inside a transaction. 10s timeout. transparencyValue: higher = more transparent (Revit SetSurfaceTransparency semantics). Note SetColor here also sets cut line + surface background colors (broader than color_splash). colorValue/transparencyValue are ignored by actions that don't use them.",
+    "top_level_param_shape": "Single nested object under 'data': parameters[\"data\"].ToObject<OperationSetting>(). OperationSetting JsonProperty keys: elementIds (List<int>), action (string), transparencyValue (int, default 50), colorValue (int[3], default [255,0,0]). Shape: {data:{elementIds:[int], action:string, transparencyValue?:int, colorValue?:[int,int,int]}}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "description": "The OperationSetting payload.",
+          "properties": {
+            "elementIds": {
+              "type": "array",
+              "description": "Integer Revit ElementId values to operate on. Must be non-empty for every action except 'ResetIsolate' (which may use an empty list).",
+              "items": {
+                "type": "integer"
+              }
+            },
+            "action": {
+              "type": "string",
+              "description": "Operation to perform (case-insensitive). Default 'Select'.",
+              "enum": [
+                "Select",
+                "SelectionBox",
+                "SetColor",
+                "SetTransparency",
+                "Delete",
+                "Hide",
+                "TempHide",
+                "Isolate",
+                "Unhide",
+                "ResetIsolate"
+              ]
+            },
+            "transparencyValue": {
+              "type": "integer",
+              "description": "Only used by action 'SetTransparency'. 0-100 (clamped); higher = more transparent. Default 50.",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "colorValue": {
+              "type": "array",
+              "description": "Only used by action 'SetColor'. RGB triple, each 0-255 (clamped). Default [255,0,0] (red). Fewer than 3 entries falls back to red.",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 3,
+              "maxItems": 3
+            }
+          },
+          "required": [
+            "elementIds",
+            "action"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "plugin_params_example": {
+      "data": {
+        "elementIds": [
+          184327,
+          184512,
+          184999
+        ],
+        "action": "SetColor",
+        "colorValue": [
+          0,
+          128,
+          255
+        ],
+        "transparencyValue": 50
+      }
+    },
+    "destructive": true,
+    "category": "modify",
+    "result_note": "Returns the handler's AIResult<string> = { Success:bool, Message:string, Response:null }. On any handled exception Success=false with the error in Message (e.g. 'unsupported action', 'no 3D view'). Note Success is set true after ExecuteElementOperation returns without inspecting its bool. On timeout the command throws TimeoutException. Destructive only when action='Delete'."
+  },
+  {
+    "tool_name": "delete_element",
+    "plugin_command": "delete_element",
+    "summary": "Permanently deletes one or more Revit elements given their ElementIds (as strings) in a single transaction.",
+    "when_to_use": "Use to remove elements from the model by id. Prefer this dedicated command over operate_element/Delete when you just want a clean bulk delete with a deleted-count result.",
+    "gotchas": "UNITS: none. DESTRUCTIVE / IRREVERSIBLE: deletes elements (and Revit will cascade-delete dependents) via doc.Delete inside a 'Delete Elements' transaction. The top-level wire key is 'elementIds' and it is an array of STRINGS (Execute does parameters[\"elementIds\"].ToObject<string[]>()), NOT ints — each string is int.TryParse'd; non-integer strings are collected as invalid. REQUIRED & non-empty: Execute throws ArgumentException if elementIds is null or empty. Ids that parse but don't resolve to an existing element are silently skipped (not counted). SIDE EFFECT / NOT HEADLESS-SAFE: the handler pops modal Revit TaskDialogs — a warning dialog listing invalid/non-existent ids, and an error dialog 'no valid elements to delete' if nothing was deletable — which will block on an interactive Revit session. Execution is guarded by a static lock (serialized). 15s timeout. DeletedCount reflects the count returned by doc.Delete (may exceed the input count because dependents are included).",
+    "top_level_param_shape": "Flat: parameters[\"elementIds\"].ToObject<string[]>(). Shape: {elementIds:[string]} — array of element id strings.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "elementIds": {
+          "type": "array",
+          "description": "REQUIRED, non-empty. Revit ElementId values as STRINGS (e.g. '184327'). Each is parsed to int; unparseable or non-existent ids are skipped (and surfaced via a modal TaskDialog warning inside Revit).",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "elementIds"
+      ]
+    },
+    "plugin_params_example": {
+      "elementIds": [
+        "184327",
+        "184512",
+        "184999"
+      ]
+    },
+    "destructive": true,
+    "category": "delete",
+    "result_note": "On success returns an anonymous object { deleted:true, count:int } where count = DeletedCount (number actually removed, may include cascaded dependents). If the handler reports failure (no valid elements) the command throws Exception('删除元素失败'/'Delete elements failed'). On timeout throws TimeoutException. Note: pops modal Revit TaskDialogs for invalid ids or when nothing is deletable."
+  },
+  {
+    "tool_name": "ai_element_filter",
+    "plugin_command": "ai_element_filter",
+    "summary": "Query Revit model elements matching a combined filter (category + element class + family symbol + bounding box) and return rich per-element info (geometry, level, params).",
+    "when_to_use": "When the agent needs to find/inspect existing elements by Revit built-in category (e.g. OST_Walls), .NET element class (e.g. Wall), family-symbol id, and/or a 3D bounding-box region, and wants detailed info back (id, uniqueId, category, level, bounding box in mm, thickness/height params).",
+    "gotchas": "Reads parameters[\"data\"] into a FilterSetting object; the wire payload MUST be wrapped under a top-level \"data\" key. VALIDATION (throws if it fails): you must supply at least ONE of filterCategory / filterElementType / filterFamilySymbolId(>0), AND at least one of includeTypes/includeInstances must be true (includeInstances defaults true, includeTypes defaults false). If includeTypes=true and includeInstances=false, then filterFamilySymbolId and filterVisibleInCurrentView are NOT allowed (validation error). boundingBoxMin/Max are JZPoint {x,y,z} doubles in MILLIMETRES (converted /304.8 to feet internally); both must be set together and min<=max on every axis or it errors. filterCategory must be an exact Revit BuiltInCategory enum name (e.g. 'OST_Walls') or it throws ArgumentException. filterElementType is resolved against the RevitAPI assembly (e.g. 'Wall' or 'Autodesk.Revit.DB.Wall'); unresolved type throws. filterFamilySymbolId applies only to instances; if the id is not a FamilySymbol it is silently ignored (logged only). maxElements defaults 50 and truncates results (set 0/negative to disable; note a logging bug reports the truncated count, not the true total). filterVisibleInCurrentView requires an active view. Output geometry/level/thickness/height are returned in MILLIMETRES. requestId/host: needs an active Revit document; 10s internal timeout.",
+    "top_level_param_shape": "Execute reads parameters[\"data\"].ToObject<FilterSetting>() => payload shape is {\"data\": { ...FilterSetting fields... }}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "object",
+          "description": "FilterSetting object. Must specify at least one filter condition and at least one of includeTypes/includeInstances.",
+          "properties": {
+            "filterCategory": {
+              "type": "string",
+              "description": "Revit BuiltInCategory enum name to filter by, e.g. 'OST_Walls'. Null/empty = no category filter. Invalid name throws."
+            },
+            "filterElementType": {
+              "type": "string",
+              "description": "Revit element .NET class name to filter by, e.g. 'Wall' or 'Autodesk.Revit.DB.Wall'. Null/empty = no class filter. Unresolvable name throws."
+            },
+            "filterFamilySymbolId": {
+              "type": "integer",
+              "description": "ElementId (int) of a FamilySymbol to filter instances by. <=0 means no family filter (default -1). Applies to instances only; ignored for types."
+            },
+            "includeTypes": {
+              "type": "boolean",
+              "description": "Include element TYPE elements (e.g. wall types). Default false."
+            },
+            "includeInstances": {
+              "type": "boolean",
+              "description": "Include placed element INSTANCES. Default true."
+            },
+            "filterVisibleInCurrentView": {
+              "type": "boolean",
+              "description": "Only elements visible in the active view. Instances only; not allowed when includeTypes=true & includeInstances=false. Default false."
+            },
+            "boundingBoxMin": {
+              "type": "object",
+              "description": "Min corner of a spatial bounding-box intersection filter, in MILLIMETRES. Must be set together with boundingBoxMax.",
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "z": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "y",
+                "z"
+              ]
+            },
+            "boundingBoxMax": {
+              "type": "object",
+              "description": "Max corner of the spatial bounding-box filter, in MILLIMETRES. Must be >= min on every axis.",
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "z": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "y",
+                "z"
+              ]
+            },
+            "maxElements": {
+              "type": "integer",
+              "description": "Max number of elements to return. Default 50. <=0 disables the limit."
+            }
+          }
+        }
+      },
+      "required": [
+        "data"
+      ]
+    },
+    "plugin_params_example": {
+      "data": {
+        "filterCategory": "OST_Walls",
+        "includeInstances": true,
+        "includeTypes": false,
+        "filterVisibleInCurrentView": false,
+        "maxElements": 50
+      }
+    },
+    "destructive": false,
+    "category": "query",
+    "result_note": "Returns AIResult<List<object>>: { Success: bool, Message: string, Response: [ ... ] }. Response is a heterogeneous list whose item shape depends on element kind (ElementInstanceInfo / ElementTypeInfo / SpatialElementInfo / ViewInfo / AnnotationInfo / GroupOrLinkInfo / ElementBasicInfo) — each has Id (int), UniqueId, Name, Category, BuiltInCategory, and geometry (BoundingBox.Min/Max as {x,y,z}) in MILLIMETRES; areas mm^2, volumes mm^3. Read Success/Message for status; an empty match throws (Success=false)."
+  },
+  {
+    "tool_name": "export_room_data",
+    "plugin_command": "export_room_data",
+    "summary": "Export a schedule-like table of all Rooms in the project (name, number, level, area, volume, perimeter, department, phase, occupancy, comments).",
+    "when_to_use": "When the agent needs a room schedule / room book: list every Room with its identity and quantities. Use for area takeoffs, room reports, occupancy/department summaries.",
+    "gotchas": "Reads FLAT top-level keys includeUnplacedRooms (bool, default false) and includeNotEnclosedRooms (bool, default false) directly from parameters (no \"data\" wrapper). UNITS ARE IMPERIAL/REVIT-INTERNAL, NOT mm: Area in square feet, Volume in cubic feet, Perimeter and UnboundedHeight in feet. BUG: both includeUnplacedRooms and includeNotEnclosedRooms gate on the identical check `room.Area == 0`, so a room with Area==0 is skipped unless BOTH conditions are satisfied/bypassed; the two flags are not actually distinguished and includeNotEnclosedRooms has no independent effect. Scans the WHOLE document (not the active view / not selection). Needs an active Revit document. 60s internal timeout.",
+    "top_level_param_shape": "Flat: parameters[\"includeUnplacedRooms\"].Value<bool>() and parameters[\"includeNotEnclosedRooms\"].Value<bool>() => {includeUnplacedRooms, includeNotEnclosedRooms}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "includeUnplacedRooms": {
+          "type": "boolean",
+          "description": "Include unplaced rooms (Area==0). Default false."
+        },
+        "includeNotEnclosedRooms": {
+          "type": "boolean",
+          "description": "Include not-enclosed/redundant rooms (Area==0). Default false. NOTE: handler uses the same Area==0 test as includeUnplacedRooms, so this flag has no distinct effect."
+        }
+      },
+      "required": []
+    },
+    "plugin_params_example": {
+      "includeUnplacedRooms": false,
+      "includeNotEnclosedRooms": false
+    },
+    "destructive": false,
+    "category": "query",
+    "result_note": "Returns ExportRoomDataResult: { Success, Message, TotalRooms: int, TotalArea: double (sq ft), Rooms: [ { Id:int, UniqueId, Name, Number, Level, Area (sq ft), Volume (cu ft), Perimeter (ft), UnboundedHeight (ft), Department, Comments, Phase, Occupancy } ] }. Check Success/Message; quantities are IMPERIAL."
+  },
+  {
+    "tool_name": "get_current_view_elements",
+    "plugin_command": "get_current_view_elements",
+    "summary": "List elements in the active Revit view, filtered by model/annotation category lists, with basic location and common parameters per element.",
+    "when_to_use": "When the agent needs what is in the CURRENT view (not the whole project): elements of given categories with id, name, category, location, and common params (Comments/Mark/Level/Family/Type). Use for view audits, selection prep, context gathering.",
+    "gotchas": "Reads FLAT top-level keys (no \"data\" wrapper): modelCategoryList (array<string>), annotationCategoryList (array<string>), includeHidden (bool, default false), limit (int, default 100). DEFAULT-CATEGORY QUIRK: the rich default category set (walls, doors, windows, furniture, rooms, dimensions, tags, etc.) is applied ONLY when BOTH lists are null at the handler. But the Command layer coalesces missing params to EMPTY lists ([]) before calling the handler, so OMITTING the keys sends empty lists, the (null && null) branch is FALSE, allCategories stays empty, and NO category filter is applied -> you get ALL non-type elements in the view. To actually get the curated defaults you would need both keys literally absent at the handler, which this command cannot produce; pass explicit category names to filter. Category strings must be valid BuiltInCategory enum names; unparseable names are silently dropped, and if none parse the category filter is skipped (all elements returned). includeHidden=false drops elements hidden in the active view. limit>0 truncates (default 100); limit<=0 means no limit. Element Location coordinates (LocationX/Y, Start/End, Length) in Properties are in Revit INTERNAL FEET, raw and unconverted (NOT mm). Needs an active Revit document/view; 60s internal timeout. On internal error it pops a Revit TaskDialog and returns null ResultInfo.",
+    "top_level_param_shape": "Flat: parameters[\"modelCategoryList\"].ToObject<List<string>>(), parameters[\"annotationCategoryList\"].ToObject<List<string>>(), parameters[\"includeHidden\"].Value<bool>(), parameters[\"limit\"].Value<int>() => {modelCategoryList:[string], annotationCategoryList:[string], includeHidden:bool, limit:int}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "modelCategoryList": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Model BuiltInCategory enum names to include (e.g. ['OST_Walls','OST_Doors']). Empty/omitted -> no model-category filtering (returns all, see default-category quirk)."
+        },
+        "annotationCategoryList": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Annotation BuiltInCategory enum names to include (e.g. ['OST_Dimensions','OST_DoorTags']). Empty/omitted -> no annotation-category filtering."
+        },
+        "includeHidden": {
+          "type": "boolean",
+          "description": "Include elements hidden in the active view. Default false."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Max elements to return. Default 100. <=0 means unlimited."
+        }
+      },
+      "required": []
+    },
+    "plugin_params_example": {
+      "modelCategoryList": [
+        "OST_Walls",
+        "OST_Doors",
+        "OST_Windows"
+      ],
+      "annotationCategoryList": [
+        "OST_Dimensions"
+      ],
+      "includeHidden": false,
+      "limit": 100
+    },
+    "destructive": false,
+    "category": "query",
+    "result_note": "Returns ViewElementsResult: { ViewId:int, ViewName:string, TotalElementsInView:int, FilteredElementCount:int, Elements: [ { Id:int, UniqueId, Name, Category, Properties: { ElementId, LocationX/Y/Z or Start/End/Length (Revit internal FEET, F2 strings), Comments, Mark, Level, Family, Type } } ] }. On handler error ResultInfo is null (a Revit TaskDialog is shown instead)."
+  },
+  {
+    "tool_name": "get_element_info",
+    "plugin_command": "get_element_info",
+    "summary": "Returns high-level info for one element: family/type/category names, level, host id, location (point or curve) and bounding box, with all geometry in millimetres.",
+    "when_to_use": "When you need a quick overview of an element by id - its category, family/type, hosting level, host element, placement point or curve endpoints, and bounding box - without pulling the full parameter list.",
+    "gotchas": "Single param only: elementId. All coordinates (location point/curve endpoints, bounding box min/max) are returned in MILLIMETRES (handler multiplies Revit feet by 304.8). familyName is set only for FamilyInstance elements; for system-family/type-based elements only typeName is set (familyName null). location is null when the element has no LocationPoint/LocationCurve; boundingBox is null if get_BoundingBox(null) returns null. hostId is a STRING (or null) only for hosted FamilyInstances. Element-not-found returns Success=false, not an exception. 15s timeout.",
+    "top_level_param_shape": "Flat single key: parameters[\"elementId\"].Value<int>() (required). => {elementId:int}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "elementId": {
+          "type": "integer",
+          "description": "Revit ElementId (integer) of the element to inspect. Required."
+        }
+      },
+      "required": [
+        "elementId"
+      ]
+    },
+    "plugin_params_example": {
+      "elementId": 354729
+    },
+    "destructive": false,
+    "category": "query",
+    "result_note": "AIResult<object>: { Success:bool, Message:string, Response:{ elementId:int, familyName:(string|null), typeName:(string|null), category:(string|null), level:(string|null), hostId:(string|null), location:(null | {type:\"point\", x,y,z} | {type:\"curve\", startX,startY,startZ, endX,endY,endZ}), boundingBox:(null | {minX,minY,minZ, maxX,maxY,maxZ}) } }. All coordinates in millimetres."
+  },
+  {
+    "tool_name": "get_element_parameters",
+    "plugin_command": "get_element_parameters",
+    "summary": "Reads instance parameter values (name/value/storageType/isReadOnly/group) for one Revit element, optionally filtered to a list of parameter names.",
+    "when_to_use": "When you need the current values of an element's parameters by element id - e.g. to inspect a wall's height, a door's mark, or read specific named parameters before editing them.",
+    "gotchas": "Reads ONLY instance parameters (element.Parameters); type parameters are NOT included (use get_parameter_definitions with includeTypeParameters for type params, though that returns no values). Double-valued params are returned in RAW REVIT INTERNAL UNITS, not millimetres (lengths in feet, angles in radians) - no mm conversion is done here, unlike most other commands. ElementId-typed params return the referenced element's integer id (or null). String params may be null. parameterNames filters by exact display-name match (case-sensitive, culture-dependent); names that don't match are silently dropped (no error). If parameterNames is omitted/empty, ALL instance params are returned. Element-not-found returns Success=false, not an exception. 15s timeout.",
+    "top_level_param_shape": "Flat keys read directly off the JObject: parameters[\"elementId\"].Value<int>() (required) and parameters[\"parameterNames\"].ToObject<List<string>>() (optional, defaults to empty list = all params). => {elementId:int, parameterNames?:[string]}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "elementId": {
+          "type": "integer",
+          "description": "Revit ElementId (integer) of the element whose instance parameters to read. Required."
+        },
+        "parameterNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of exact parameter display names to return. Case/culture-sensitive exact match; unmatched names are silently ignored. Omit or pass empty to return ALL instance parameters."
+        }
+      },
+      "required": [
+        "elementId"
+      ]
+    },
+    "plugin_params_example": {
+      "elementId": 354729,
+      "parameterNames": [
+        "Comments",
+        "Mark",
+        "Unconnected Height"
+      ]
+    },
+    "destructive": false,
+    "category": "query",
+    "result_note": "AIResult<List<object>>: { Success:bool, Message:string, Response:[ { name:string, value:(string|int|double|int|null), storageType:\"String\"|\"Integer\"|\"Double\"|\"ElementId\"|\"None\", isReadOnly:bool, group:string(GroupTypeId.TypeId or \"\") } ] }. Read Success first; Response holds the parameter list. Remember double values are in Revit internal units (feet/radians), not mm."
+  },
+  {
+    "tool_name": "get_material_quantities",
+    "plugin_command": "get_material_quantities",
+    "summary": "Aggregate material take-off (area + volume per material) across the model or the current selection, optionally filtered by category.",
+    "when_to_use": "When the agent needs a material quantity take-off: total area and volume grouped by Revit Material, with the count and ids of contributing elements. Use for QTO/BOQ, sustainability, or cost estimates.",
+    "gotchas": "Reads FLAT top-level keys categoryFilters (array of BuiltInCategory enum-name strings, optional/nullable) and selectedElementsOnly (bool, default false) directly from parameters (no \"data\" wrapper). categoryFilters entries that are not valid BuiltInCategory names are silently dropped (Enum.TryParse); if NONE parse, the category filter is silently skipped and ALL elements are scanned. UNITS are Revit internal: Area in square feet, Volume in cubic feet (NOT mm). If selectedElementsOnly=true the category filter is IGNORED (it only filters the whole-doc collector branch) and the current UI selection is used instead; empty selection yields zero materials. Uses GetMaterialIds(false)/GetMaterialArea(false)/GetMaterialVolume so only model (non-paint) materials with computed quantities are counted. Whole-document scan can be slow; 120s internal timeout. Needs an active Revit document.",
+    "top_level_param_shape": "Flat: parameters[\"categoryFilters\"].ToObject<List<string>>() and parameters[\"selectedElementsOnly\"].Value<bool>() => {categoryFilters:[string], selectedElementsOnly:bool}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "categoryFilters": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional list of Revit BuiltInCategory enum names (e.g. ['OST_Walls','OST_Floors']) to restrict the scan. Null/empty = all categories. Invalid names are silently ignored. Ignored entirely when selectedElementsOnly=true."
+        },
+        "selectedElementsOnly": {
+          "type": "boolean",
+          "description": "If true, compute quantities only for the currently selected elements (ignores categoryFilters). Default false = whole document."
+        }
+      },
+      "required": []
+    },
+    "plugin_params_example": {
+      "categoryFilters": [
+        "OST_Walls",
+        "OST_Floors"
+      ],
+      "selectedElementsOnly": false
+    },
+    "destructive": false,
+    "category": "query",
+    "result_note": "Returns GetMaterialQuantitiesResult: { Success, Message, TotalMaterials:int, TotalArea:double (sq ft), TotalVolume:double (cu ft), Materials: [ { MaterialId:int, MaterialName, MaterialClass, Area (sq ft), Volume (cu ft), ElementCount:int, ElementIds:[int] } ] }. Check Success/Message; quantities in Revit internal imperial units."
+  },
+  {
+    "tool_name": "get_parameter_definitions",
+    "plugin_command": "get_parameter_definitions",
+    "summary": "Lists parameter DEFINITIONS (name, GUID, storageType, group, isShared, isReadOnly, isTypeParameter) for an element and optionally its type - metadata only, no values.",
+    "when_to_use": "When you need to discover what parameters exist on an element (and its type) and their metadata - e.g. to find the exact parameter name/GUID/storage type before reading or setting a value. Use get_element_parameters to get actual values.",
+    "gotchas": "Returns DEFINITIONS/metadata only - NO parameter values. By default (includeTypeParameters=true) it collects instance params (isTypeParameter=false) then the element's type params (isTypeParameter=true); set false to get instance only. guid is populated only for shared (ExternalDefinition) params, otherwise null; isShared reflects the same. group is GroupTypeId.TypeId string or \"\". Element-not-found returns Success=false, not an exception. 15s timeout.",
+    "top_level_param_shape": "Flat keys: parameters[\"elementId\"].Value<int>() (required) and parameters[\"includeTypeParameters\"].Value<bool>() (optional, defaults true). => {elementId:int, includeTypeParameters?:bool}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "elementId": {
+          "type": "integer",
+          "description": "Revit ElementId (integer) of the element whose parameter definitions to list. Required."
+        },
+        "includeTypeParameters": {
+          "type": "boolean",
+          "description": "If true (default), also include the element type's parameter definitions (flagged isTypeParameter=true). If false, instance parameters only.",
+          "default": true
+        }
+      },
+      "required": [
+        "elementId"
+      ]
+    },
+    "plugin_params_example": {
+      "elementId": 354729,
+      "includeTypeParameters": true
+    },
+    "destructive": false,
+    "category": "query",
+    "result_note": "AIResult<List<object>>: { Success:bool, Message:string, Response:[ { name:string, guid:(string|null, only for shared params), storageType:\"String\"|\"Integer\"|\"Double\"|\"ElementId\"|\"None\", group:string, isShared:bool, isReadOnly:bool, isTypeParameter:bool } ] }. Metadata only - no values."
+  },
+  {
+    "tool_name": "execute_transaction_group",
+    "plugin_command": "execute_transaction_group",
+    "summary": "Run an ordered batch of supported sub-operations (set parameter, delete, tag) inside a single Revit TransactionGroup, with optional dry-run rollback.",
+    "when_to_use": "Use to bundle several mutations atomically-ish so they appear as one undo group, or to validate a batch without committing via dryRun. Only three sub-tools are supported: set_element_parameter, delete_element, tag_element. Reach for it when you want all-or-nothing semantics across these operations.",
+    "gotchas": "Only these call.tool values work: 'set_element_parameter', 'delete_element', 'tag_element' - any other tool name throws NotSupportedException and aborts the whole group. NOT atomic in the strict sense: each sub-call runs in its own inner Transaction that is committed immediately; on the FIRST failure the inner tx is rolled back AND the outer TransactionGroup is RolledBack (discarding prior committed sub-calls), then it returns. On success the group is Assimilated (or RolledBack if dryRun=true). dryRun default false; groupName default 'MCP Transaction Group'. delete_element is DESTRUCTIVE. Sub-call param shapes: set_element_parameter needs elementId (int) + parameters [{name,value}] (read-only/missing params skipped; Double values set in Revit internal units=feet); delete_element needs elementIds as an array of STRINGS (parsed to int, non-existent ids skipped); tag_element needs elementId (int), optional useLeader (bool, default false), offsetX/offsetY (MILLIMETRES, default 0/500), optional tagTypeId (string id) - tag is created in doc.ActiveView and auto-finds a Tag family matching the element's category if tagTypeId not given (throws 'No tag family found.' if none). Requires active document; tag_element also requires a suitable active view. Command-side timeout 120s.",
+    "top_level_param_shape": "Execute reads parameters[\"calls\"] as JArray of {tool:string, params:JObject}, plus flat parameters[\"groupName\"] (string) and parameters[\"dryRun\"] (bool). Shape: {calls:[{tool,params}], groupName?, dryRun?}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "calls": {
+          "type": "array",
+          "description": "Ordered list of sub-operations to execute within the transaction group. Required, non-empty. Executed in order; first failure rolls back the entire group.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "description": "Sub-operation name. Must be one of: 'set_element_parameter', 'delete_element', 'tag_element'.",
+                "enum": [
+                  "set_element_parameter",
+                  "delete_element",
+                  "tag_element"
+                ]
+              },
+              "params": {
+                "type": "object",
+                "description": "Parameters for the sub-operation; shape depends on 'tool'. set_element_parameter: {elementId:int, parameters:[{name:string,value:any}]}. delete_element: {elementIds:[string]} (ids as strings). tag_element: {elementId:int, useLeader?:bool, offsetX?:number(mm), offsetY?:number(mm,default 500), tagTypeId?:string}."
+              }
+            },
+            "required": [
+              "tool",
+              "params"
+            ]
+          }
+        },
+        "groupName": {
+          "type": "string",
+          "description": "Display name of the Revit TransactionGroup (shown in undo history). Default 'MCP Transaction Group'."
+        },
+        "dryRun": {
+          "type": "boolean",
+          "description": "If true, all sub-calls run for validation then the entire group is rolled back (no changes committed). Default false."
+        }
+      },
+      "required": [
+        "calls"
+      ]
+    },
+    "plugin_params_example": {
+      "groupName": "Tag and label desks",
+      "dryRun": false,
+      "calls": [
+        {
+          "tool": "set_element_parameter",
+          "params": {
+            "elementId": 348201,
+            "parameters": [
+              {
+                "name": "Comments",
+                "value": "Reviewed"
+              }
+            ]
+          }
+        },
+        {
+          "tool": "tag_element",
+          "params": {
+            "elementId": 348201,
+            "useLeader": false,
+            "offsetX": 0,
+            "offsetY": 500
+          }
+        },
+        {
+          "tool": "delete_element",
+          "params": {
+            "elementIds": [
+              "348999",
+              "349000"
+            ]
+          }
+        }
+      ]
+    },
+    "destructive": true,
+    "category": "orchestrate",
+    "result_note": "Returns AIResult<List<object>>: { Success:bool, Message:string, Response:[...] }. Response is a per-sub-call array; each entry is {tool, success:true, result:<toolResult>} on success or {tool, success:false, error:<msg>} for the failing call. Sub-results: set_element_parameter -> {updated:[names]}; delete_element -> {deleted:count}; tag_element -> {tagId:int}. On any failure Success=false and the whole group is rolled back. dryRun success Message notes nothing was committed."
+  },
+  {
+    "tool_name": "export_view_image",
+    "plugin_command": "export_view_image",
+    "summary": "Export a Revit view to a PNG image file on disk at a given pixel size.",
+    "when_to_use": "Use to render a named view (or the active view) to a PNG for previews, documentation, or to feed an image back to the agent. Supply an output path and optionally the view name and pixel dimensions.",
+    "gotchas": "Flat params: outputPath REQUIRED (throws if missing); viewName optional (default = active view; matched by exact Name among non-template views); pixelWidth default 1920, pixelHeight default 1080. IMPORTANT broken/surprising: the exporter sets PixelSize = Math.Max(pixelWidth, pixelHeight) - it does NOT honor aspect ratio or set width/height independently; only the LARGER dimension is used as a single square-ish PixelSize and Revit derives the rest from the view crop. Output is always PNG (HLR/WF and Shadow file types hardcoded to PNG) at DPI_150, ZoomFitType.FitToPage. The handler writes to Path.Combine(dir, fileNameWithoutExtension) and lets Revit append the extension, so the actual file is <dir>/<name>.png regardless of the extension you pass in outputPath (Result.Response still echoes your original outputPath string, which may not match the real file name). Output directory is auto-created. Requires an active document. Command-side timeout 60s.",
+    "top_level_param_shape": "Execute reads flat keys: parameters[\"outputPath\"] (string,required), parameters[\"viewName\"] (string), parameters[\"pixelWidth\"] (int), parameters[\"pixelHeight\"] (int). Shape: {outputPath, viewName?, pixelWidth?, pixelHeight?}",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "outputPath": {
+          "type": "string",
+          "description": "Absolute file path for the exported image. REQUIRED. Directory is auto-created. Note: Revit forces a .png extension and writes <dir>/<filenameWithoutExtension>.png, so any extension you supply is effectively replaced by .png."
+        },
+        "viewName": {
+          "type": "string",
+          "description": "Exact name of the (non-template) view to export. If empty or not found, the active view is used."
+        },
+        "pixelWidth": {
+          "type": "integer",
+          "description": "Requested width in pixels. Default 1920. NOTE: only Math.Max(pixelWidth,pixelHeight) is used as a single PixelSize - width and height are not honored independently."
+        },
+        "pixelHeight": {
+          "type": "integer",
+          "description": "Requested height in pixels. Default 1080. See pixelWidth note - effective image size is driven by the larger of the two values."
+        }
+      },
+      "required": [
+        "outputPath"
+      ]
+    },
+    "plugin_params_example": {
+      "outputPath": "C:/Temp/revit_exports/level1_floorplan.png",
+      "viewName": "Level 1",
+      "pixelWidth": 1920,
+      "pixelHeight": 1080
+    },
+    "destructive": false,
+    "category": "io",
+    "result_note": "Returns AIResult<string>: { Success:bool, Message:string, Response:string }. Response is the outputPath you passed (echoed), not necessarily the real on-disk file name (Revit may write <name>.png). Success=false with Message 'No view found.' if neither viewName nor an active view resolves, or an exception message on export failure."
+  }
+]

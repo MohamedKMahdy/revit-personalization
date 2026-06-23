@@ -251,6 +251,29 @@ def test_real_dispatch_query_tools(monkeypatch):
     assert s["success"] and s["selected_ids"] == [123, 456]
 
 
+def test_real_dispatch_routes_full_plugin_surface(monkeypatch):
+    """A non-curated plugin tool (e.g. create_grid) routes through the generic pass-through."""
+    from mcp_server import revit_bridge as rb
+    captured = {}
+
+    def fake_call(command, params, timeout=None):
+        captured["command"] = command
+        return {"Success": True, "Response": [9001], "Message": "grid created"}
+
+    monkeypatch.setattr(rb, "_call_plugin", fake_call)
+
+    out = ex.real_dispatch("create_grid", {"data": {"originX": 0, "count": 3, "spacing": 6000}})
+    assert captured["command"] == "create_grid"
+    assert out["success"] is True and out["response"] == [9001]
+
+
+def test_real_dispatch_rejects_blocked_tool():
+    """send_code_to_revit is not exposed and never dispatches to the plugin."""
+    assert "send_code_to_revit" not in ex.ALLOWED_TOOLS
+    out = ex.real_dispatch("send_code_to_revit", {"code": "doc.Delete(x)"})
+    assert out["success"] is False        # falls through to the unknown/disallowed branch
+
+
 def test_events_streamed():
     """on_event must emit reasoning / tool / result / done so the chat can stream it."""
     script = [
