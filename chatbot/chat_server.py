@@ -45,6 +45,7 @@ from pydantic import BaseModel
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
+from orchestrator.executor_agent import run_executor, build_goal
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT  = int(os.environ.get("CHATBOT_PORT", "5000"))
@@ -653,6 +654,60 @@ async def api_pick(body: ActionIn = ActionIn()):
     return {"success": True, **loc}
 
 
+@app.post("/api/execute-smart")
+async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
+    """Agentic, self-healing execution. An LLM tool-use loop reproduces the routine in the
+    live model and RECOVERS from failures (no host wall → ask the user to pick one; family
+    not loaded → list available + pick the closest). Streams its reasoning, tool calls, and
+    results as SSE so the chat shows the self-correction transcript (like Claude Code)."""
+    rec = _rec_for(body.pattern_id)
+
+    async def _err(msg):
+        yield f"data: {json.dumps({'kind': 'error', 'payload': msg})}\n\n"
+        yield f"data: {json.dumps({'kind': 'final', 'payload': {'done': False, 'summary': msg}})}\n\n"
+
+    if not rec:
+        return StreamingResponse(_err("No pattern loaded"), media_type="text/event-stream")
+
+    motif = rec.get("motif", {})
+    merged = {**rec.get("pending_location", {})}
+    if body.x is not None: merged["x"] = body.x
+    if body.y is not None: merged["y"] = body.y
+    if body.z is not None: merged["z"] = body.z
+    location = merged or None
+
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def on_event(kind, payload):
+        # bridge the synchronous executor thread → the async SSE queue
+        loop.call_soon_threadsafe(queue.put_nowait, {"kind": kind, "payload": payload})
+
+    async def gen():
+        task = asyncio.create_task(
+            asyncio.to_thread(run_executor, build_goal(motif, location), on_event=on_event))
+        while not (task.done() and queue.empty()):
+            try:
+                ev = await asyncio.wait_for(queue.get(), timeout=0.25)
+                yield f"data: {json.dumps(ev)}\n\n"
+            except asyncio.TimeoutError:
+                continue
+        result = await task
+        for c in result.get("tool_calls", []):
+            if (c["name"] == "place_element" and c["result"].get("success")
+                    and c["result"].get("element_id")):
+                rec["last_element_id"] = int(c["result"]["element_id"])
+        if result.get("done"):
+            rec["status"] = "executed"
+        _save_history()
+        yield ("data: " + json.dumps({"kind": "final", "payload": {
+            "done": result.get("done"), "summary": result.get("summary"),
+            "attempts": result.get("attempts")}}) + "\n\n")
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Chat UI  (served at /)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1088,36 +1143,43 @@ async function runExec(){
 
   const btn = document.getElementById('btn-exec');
   btn.textContent = '⟳ Running…';
-  setStatus('⟳ Executing in Revit — please wait…', 'info');
+  setStatus('⟳ Executing in Revit — self-correcting on errors…', 'info');
 
-  try{
-    const r   = await fetch('/api/execute', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(withPid())
-    });
-    const res = await r.json();
-    if(res.success && res.errors === 0){
-      setStatus(`✓ Done — ${res.steps_executed} step(s) executed`, 'success');
-      addBubble('bot', `Done! Applied ${res.steps_executed} step(s) to your model. Zooming to the placed element now…`);
-      try{ await fetch('/api/zoom', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(withPid())}); } catch(e){}
-      setStatus(`✓ Done — ${res.steps_executed} step(s) executed · zoomed to element`, 'success');
-      unfreezeActions();
-      btn.textContent = '▶ Execute Again';
-      inp().placeholder = 'Ask a follow-up question…';
-      inp().focus();
-    } else {
-      const stepErrors = (res.results || []).map(s => s.result?.error).filter(Boolean);
-      const err = stepErrors[0] || res.error || `${res.errors} step(s) failed`;
-      setStatus(`✗ ${err}`, 'error');
-      addBubble('bot', `Revit reported an error: ${err}`);
-      unfreezeActions();
+  // Agentic, self-healing execution: stream the executor's reasoning + tool calls so the
+  // user watches it diagnose and retry (Claude-Code style) instead of one blind shot.
+  const handle = (line)=>{
+    if(!line.startsWith('data: ')) return;
+    let ev; try{ ev = JSON.parse(line.slice(6)); } catch{ return; }
+    const k = ev.kind, p = ev.payload;
+    if(k === 'reasoning'){ if(p && String(p).trim()) addBubble('bot', p); }
+    else if(k === 'tool'){ setStatus(`🔧 ${p.name}…`, 'info'); }
+    else if(k === 'result'){
+      const ok = p.result && p.result.success;
+      setStatus(`${ok?'✓':'⟳'} ${p.name}: ${String((p.result&&p.result.message)||'').slice(0,70)}`, ok?'success':'info');
     }
+    else if(k === 'error'){ setStatus(`✗ ${p}`, 'error'); }
+    else if(k === 'final'){
+      if(p.done){ setStatus(`✓ Routine complete (${p.attempts} step(s))`, 'success'); btn.textContent = '▶ Execute Again'; inp().placeholder = 'Ask a follow-up question…'; }
+      else { setStatus(`✗ Stopped: ${String(p.summary||'could not finish').slice(0,90)}`, 'error'); }
+    }
+  };
+  try{
+    const resp = await fetch('/api/execute-smart', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(withPid())
+    });
+    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while(true){
+      const {done, value} = await reader.read(); if(done) break;
+      buf += dec.decode(value, {stream:true}); const parts = buf.split('\n'); buf = parts.pop();
+      for(const line of parts) handle(line);
+    }
+    if(buf) handle(buf);
   } catch(e){
-    setStatus(`✗ Network error: ${e.message}`, 'error');
+    setStatus(`✗ ${e.message}`, 'error');
     addBubble('bot', `Could not reach the server: ${e.message}`);
-    unfreezeActions();
   }
-  loadPatterns();   // reflect new "executed" status in the sidebar
+  unfreezeActions();
+  loadPatterns();   // reflect the new "executed" status in the sidebar
 }
 
 async function runAction(endpoint, label){
