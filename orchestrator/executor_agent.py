@@ -213,6 +213,7 @@ def run_executor(
     on_event: Callable[[str, Any], None] | None = None,
     max_iters: int = MAX_ITERS,
     model: str = EXECUTOR_MODEL,
+    memory_block: str = "",
 ) -> dict:
     """Run the self-healing execution loop. Returns
        {done, summary, steps, attempts, tool_calls:[{name,args,result}]}.
@@ -226,6 +227,7 @@ def run_executor(
         client = anthropic.Anthropic()
 
     emit = on_event or (lambda *_: None)
+    system = EXECUTOR_SYSTEM + (memory_block or "")   # project memory steers the run
     messages: list[dict] = [{"role": "user", "content": goal}]
     tool_calls: list[dict] = []
     attempts = 0
@@ -233,7 +235,7 @@ def run_executor(
     for _ in range(max_iters):
         try:
             resp = client.messages.create(
-                model=model, max_tokens=1024, system=EXECUTOR_SYSTEM,
+                model=model, max_tokens=1024, system=system,
                 tools=TOOL_SCHEMAS, messages=messages,
             )
         except Exception as exc:

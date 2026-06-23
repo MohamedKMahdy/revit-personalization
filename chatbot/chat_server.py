@@ -46,6 +46,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
 from orchestrator.executor_agent import run_executor, build_goal
+from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT  = int(os.environ.get("CHATBOT_PORT", "5000"))
@@ -676,6 +677,10 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
     if body.z is not None: merged["z"] = body.z
     location = merged or None
 
+    # Load project memory and steer the run with what we already know (Claude-Code style).
+    routine_id, label = rec.get("id", ""), rec.get("label", "")
+    memory_block = pm.to_prompt(pm.load(), routine_id)
+
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -684,8 +689,11 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         loop.call_soon_threadsafe(queue.put_nowait, {"kind": kind, "payload": payload})
 
     async def gen():
-        task = asyncio.create_task(
-            asyncio.to_thread(run_executor, build_goal(motif, location), on_event=on_event))
+        if memory_block:
+            yield ("data: " + json.dumps({"kind": "memory",
+                   "payload": "Using what I remember about this project."}) + "\n\n")
+        task = asyncio.create_task(asyncio.to_thread(
+            run_executor, build_goal(motif, location), on_event=on_event, memory_block=memory_block))
         while not (task.done() and queue.empty()):
             try:
                 ev = await asyncio.wait_for(queue.get(), timeout=0.25)
@@ -700,6 +708,16 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         if result.get("done"):
             rec["status"] = "executed"
         _save_history()
+
+        # Write back what the executor learned (family substitution, host wall, values) so the
+        # assistant goes straight to it next time — this is the project understanding accruing.
+        try:
+            mem = pm.load()
+            pm.learn_from_run(mem, routine_id, label, result.get("tool_calls", []), result.get("done", False))
+            pm.save(mem)
+        except Exception:
+            pass
+
         yield ("data: " + json.dumps({"kind": "final", "payload": {
             "done": result.get("done"), "summary": result.get("summary"),
             "attempts": result.get("attempts")}}) + "\n\n")
@@ -1151,7 +1169,8 @@ async function runExec(){
     if(!line.startsWith('data: ')) return;
     let ev; try{ ev = JSON.parse(line.slice(6)); } catch{ return; }
     const k = ev.kind, p = ev.payload;
-    if(k === 'reasoning'){ if(p && String(p).trim()) addBubble('bot', p); }
+    if(k === 'memory'){ setStatus(`🧠 ${p}`, 'info'); }
+    else if(k === 'reasoning'){ if(p && String(p).trim()) addBubble('bot', p); }
     else if(k === 'tool'){ setStatus(`🔧 ${p.name}…`, 'info'); }
     else if(k === 'result'){
       const ok = p.result && p.result.success;
