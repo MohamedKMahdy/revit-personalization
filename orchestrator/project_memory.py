@@ -113,6 +113,14 @@ def to_prompt(mem: dict, routine_id: str) -> str:
                          + " (the user may want the next in sequence, e.g. Mark D-101 -> D-102).")
         if r.get("executions"):
             lines.append(f"You've completed this routine {r['executions']} time(s) here before.")
+    loaded = (mem.get("project") or {}).get("loaded_families") or {}
+    if loaded:
+        parts = []
+        for cat, fams in loaded.items():
+            short = cat.replace("OST_", "")
+            parts.append(f"{short}: " + ", ".join(fams[:8]) + (" …" if len(fams) > 8 else ""))
+        lines.append("Families already known to be LOADED in this model (no need to re-query "
+                     "get_available_family_types — place one of these): " + " | ".join(parts))
     if mem.get("preferences"):
         lines.append("User preferences: " + "; ".join(mem["preferences"]))
     if not lines:
@@ -122,7 +130,16 @@ def to_prompt(mem: dict, routine_id: str) -> str:
 
 
 def learn_from_run(mem: dict, routine_id: str, label: str, tool_calls: list[dict], done: bool) -> None:
-    """Write back what the executor learned this run: family substitution, host wall, values."""
+    """Write back what the executor learned this run: family substitution, host wall, values,
+    and facts it discovered by QUERYING the live model (which families are loaded)."""
+    # Facts learned from the model itself — cache so next run doesn't re-discover them.
+    for c in tool_calls:
+        if c.get("name") == "get_available_family_types" and (c.get("result") or {}).get("success"):
+            cat = (c.get("args") or {}).get("category")
+            fams = sorted({t.get("family") for t in (c["result"].get("types") or []) if t.get("family")})
+            if cat and fams:
+                remember_loaded_families(mem, cat, fams)
+
     places = [c for c in tool_calls if c.get("name") == "place_element"]
     wanted = places[0]["args"].get("family_name") if places else None
     used = next((c["args"].get("family_name") for c in places

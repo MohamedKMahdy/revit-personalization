@@ -156,6 +156,101 @@ def test_disallowed_tool_never_dispatched():
     assert out["done"] is True
 
 
+def test_proactively_queries_then_places_loaded_family():
+    """Agent INVESTIGATES the model first (lists loaded types), then places the family that
+    actually exists — grounding itself instead of placing blind and failing."""
+    script = [
+        Resp([_txt("Let me check which door families are loaded here first."),
+              _tu("get_available_family_types", {"category": "OST_Doors"}, "t1")]),
+        Resp([_tu("place_element",
+              {"family_name": "M_Door-Passage-Single-Flush", "location": {"x": 2500, "y": 0}}, "t2")]),
+        Resp([_txt("Placed the loaded family on the first try.")]),
+    ]
+
+    def fake_dispatch(name, args):
+        if name == "get_available_family_types":
+            return {"success": True, "types": [{"family": "M_Door-Passage-Single-Flush",
+                                                "type": "0915x2134mm", "id": 1}]}
+        if name == "place_element":
+            return {"success": True, "element_id": 42}
+        return {"success": False, "message": "unknown"}
+
+    out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch)
+    assert out["done"] is True
+    assert [c["name"] for c in out["tool_calls"]] == ["get_available_family_types", "place_element"]
+    assert all(c["result"]["success"] for c in out["tool_calls"])     # queried first -> no failed write
+
+
+def test_uses_selection_as_host():
+    """If the user pre-selected a wall, the agent reads the selection and hosts on that wall id."""
+    script = [
+        Resp([_txt("Checking your selection for a host wall."), _tu("get_selected_elements", {}, "t1")]),
+        Resp([_tu("place_element",
+              {"family_name": "M_Door", "location": {"x": 0, "y": 0}, "host_wall_id": 777}, "t2")]),
+        Resp([_txt("Hosted on the wall you selected.")]),
+    ]
+
+    def fake_dispatch(name, args):
+        if name == "get_selected_elements":
+            return {"success": True, "selected_ids": [777]}
+        if name == "place_element":
+            return {"success": True, "element_id": 9}
+        return {"success": False}
+
+    out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch)
+    assert out["done"] is True
+    assert out["tool_calls"][0]["name"] == "get_selected_elements"
+    assert out["tool_calls"][1]["args"]["host_wall_id"] == 777
+
+
+def test_inspect_model_no_walls_stops_gracefully():
+    """Door routine + a model with zero walls: the agent checks, sees Walls:0, and stops with an
+    explanation instead of looping place_element forever against an impossible host."""
+    script = [
+        Resp([_txt("Checking the model before placing a wall-hosted door."), _tu("inspect_model", {}, "t1")]),
+        Resp([_txt("Your model has no walls, so there is nothing to host a door on — "
+                   "draw or pick a wall and I'll continue.")]),
+    ]
+
+    def fake_dispatch(name, args):
+        if name == "inspect_model":
+            return {"success": True, "counts": {"Walls": 0, "Doors": 0}, "total_categories": 5}
+        return {"success": True, "element_id": 1}
+
+    out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch)
+    assert out["done"] is True
+    assert [c["name"] for c in out["tool_calls"]] == ["inspect_model"]     # never attempted a place
+    assert "wall" in out["summary"].lower()
+
+
+def test_real_dispatch_query_tools(monkeypatch):
+    """The new read tools map onto the right plugin calls and normalize their results."""
+    from mcp_server import revit_bridge as rb
+
+    def fake_call(method, params=None):
+        if method == "get_current_view_info":
+            return {"Name": "L1 - Architectural", "ViewType": "FloorPlan", "Scale": 100}
+        if method == "analyze_model_statistics":
+            return {"categories": [{"categoryName": "Walls", "elementCount": 3},
+                                   {"categoryName": "Doors", "elementCount": 1},
+                                   {"categoryName": "Cameras", "elementCount": 9}]}
+        if method == "get_selected_elements":
+            return [{"Id": 123, "Category": "Walls"}, {"ElementId": 456}]
+        return None
+
+    monkeypatch.setattr(rb, "_call_plugin", fake_call)
+
+    v = ex.real_dispatch("get_active_view", {})
+    assert v["success"] and v["view"]["name"] == "L1 - Architectural" and v["view"]["type"] == "FloorPlan"
+
+    m = ex.real_dispatch("inspect_model", {})
+    assert m["success"] and m["counts"]["Walls"] == 3 and m["counts"]["Doors"] == 1
+    assert "Cameras" not in m["counts"] and m["total_categories"] == 3      # only placement cats surfaced
+
+    s = ex.real_dispatch("get_selected_elements", {})
+    assert s["success"] and s["selected_ids"] == [123, 456]
+
+
 def test_events_streamed():
     """on_event must emit reasoning / tool / result / done so the chat can stream it."""
     script = [

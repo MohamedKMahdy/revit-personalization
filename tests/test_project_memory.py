@@ -70,6 +70,27 @@ def test_no_substitution_when_family_unchanged(mem_file):
     assert m["routines"]["r1"]["executions"] == 1
 
 
+def test_learn_caches_families_discovered_from_model(mem_file):
+    """When the executor QUERIES the model for loaded types, memory caches them and renders
+    them back next run so the agent doesn't re-discover what's loaded."""
+    m = pm.load()
+    calls = [
+        {"name": "get_available_family_types", "args": {"category": "OST_Doors"},
+         "result": {"success": True, "types": [
+             {"family": "M_Door-Passage-Single-Flush", "type": "0915x2134mm", "id": 1},
+             {"family": "M_Door-Passage-Single-Flush", "type": "0762x2032mm", "id": 2},
+             {"family": "Curtain Wall Dbl Glass", "type": "default", "id": 3}]}},
+        {"name": "place_element", "args": {"family_name": "M_Door-Passage-Single-Flush"},
+         "result": {"success": True, "element_id": 5}},
+    ]
+    pm.learn_from_run(m, "r1", "Door", calls, done=True)
+    fams = m["project"]["loaded_families"]["OST_Doors"]
+    assert fams == ["Curtain Wall Dbl Glass", "M_Door-Passage-Single-Flush"]   # deduped + sorted
+
+    block = pm.to_prompt(m, "r1")
+    assert "LOADED" in block and "M_Door-Passage-Single-Flush" in block and "Doors:" in block
+
+
 def test_record_host_wall(mem_file):
     m = pm.load()
     calls = [{"name": "place_element", "args": {"family_name": "M_Door", "host_wall_id": 1663968},

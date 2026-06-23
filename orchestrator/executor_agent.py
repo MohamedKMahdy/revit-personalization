@@ -95,6 +95,26 @@ TOOL_SCHEMAS: list[dict] = [
         },
     },
     {
+        "name": "get_active_view",
+        "description": "Get the active Revit view (name, type, scale). Point placement needs a "
+                       "plan or 3D view; use this to know the context before placing.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "inspect_model",
+        "description": "Count elements by category in the model (Walls, Doors, Windows, Floors, "
+                       "Levels, ...). Use this to CHECK whether the model has walls before placing a "
+                       "wall-hosted door/window — if Walls is 0 there is nothing to host on, so tell "
+                       "the user instead of failing.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_selected_elements",
+        "description": "Get the elements the user currently has SELECTED in Revit. If they selected a "
+                       "wall, use its id as host_wall_id to place the door on exactly that wall.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "pick_point",
         "description": (
             "Ask the USER to click the placement point in Revit. Use this when you need a "
@@ -115,7 +135,21 @@ EXECUTOR_SYSTEM = """\
 You are the execution layer of a BIM personalization assistant. You replay a LEARNED Revit
 routine in the user's LIVE model using the tools. Work one step at a time.
 
-YOUR MAIN JOB IS TO SELF-CORRECT ON ERRORS:
+LEARN FROM THE MODEL — QUERY MISSING INFORMATION BEFORE YOU GUESS:
+The routine was learned offline and is blind to THIS model. When a fact you need is missing or
+uncertain, find it out from the live model with the read tools instead of guessing or failing:
+- Unsure the routine's family is loaded here? Call get_available_family_types for the category
+  FIRST and place the family that actually exists — don't place blind and wait for "created 0".
+- About to place a wall-hosted door/window? Call inspect_model and check the Walls count. If it
+  is 0 there is nothing to host on — say so and ask the user to draw or pick a wall; do NOT loop.
+- Need a host wall or a target element? Call get_selected_elements — if the user pre-selected a
+  wall, use its id as host_wall_id (that is the user telling you where).
+- Unsure where you are? Call get_active_view (point placement needs a plan or 3D view).
+Read tools are cheap and safe — prefer one query over a failed write or a question to the user.
+Once you've learned a fact (which family is loaded, which wall, which level), reuse it; don't
+re-query the same thing every step.
+
+YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
 - Every tool result has "success" and a "message". If a tool FAILS, read the message,
   diagnose the cause, and RETRY with a fix. Never give up after a single failure.
 - "no valid host" / "no host found": the element is wall-hosted (door/window) and there is
@@ -184,6 +218,30 @@ def real_dispatch(name: str, args: dict) -> dict:
         types = [{"family": d.get("FamilyName"), "type": d.get("TypeName"), "id": d.get("FamilyTypeId")}
                  for d in rows]
         return {"success": True, "message": f"{len(types)} type(s) loaded", "types": types[:60]}
+
+    if name == "get_active_view":
+        res = rb._call_plugin("get_current_view_info", {})
+        if isinstance(res, dict):
+            return {"success": True, "view": {"name": res.get("Name"), "type": res.get("ViewType"),
+                                              "scale": res.get("Scale")}}
+        return {"success": False, "message": _msg(res)}
+
+    if name == "inspect_model":
+        res = rb._call_plugin("analyze_model_statistics", {})
+        cats = ({c.get("categoryName"): c.get("elementCount") for c in (res.get("categories") or [])}
+                if isinstance(res, dict) else {})
+        keep = {k: cats[k] for k in ("Walls", "Doors", "Windows", "Floors", "Levels", "Rooms") if k in cats}
+        return {"success": True, "counts": keep, "total_categories": len(cats)}
+
+    if name == "get_selected_elements":
+        res = rb._call_plugin("get_selected_elements", {})
+        ids = []
+        if isinstance(res, list):
+            for e in res:
+                eid = e.get("Id") or e.get("ElementId") or (e.get("Properties") or {}).get("ElementId")
+                if eid is not None:
+                    ids.append(eid)
+        return {"success": True, "selected_ids": ids}
 
     if name == "pick_point":
         res = rb.pick_point("point", args.get("prompt", "Click the placement point — on a wall for a door/window."))
