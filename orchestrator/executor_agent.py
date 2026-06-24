@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -423,10 +424,73 @@ SETPARAM_TOOLS = {"set_parameter", "set_element_parameter"}
 TAG_TOOLS = {"tag_element", "tag_walls", "tag_rooms"}
 
 
-def required_steps_from_motif(motif: dict) -> list[dict]:
+def next_in_sequence(value):
+    """The next value in a sequence: increment the LAST run of digits, preserving prefix/suffix and
+    zero-padding. 'D-105'->'D-106', '1002'->'1003', 'W-09'->'W-10', 'ABC'->None (no number)."""
+    if value in (None, ""):
+        return None
+    s = str(value)
+    m = re.search(r"(\d+)(\D*)$", s)
+    if not m:
+        return None
+    num, suffix = m.group(1), m.group(2)
+    nxt = str(int(num) + 1).zfill(len(num))            # zfill keeps width and never truncates
+    return s[:m.start(1)] + nxt + suffix
+
+
+def _max_in_sequence(values: list) -> str | None:
+    """The value with the highest trailing number (where the sequence currently sits)."""
+    best, best_n = None, None
+    for v in values:
+        m = re.search(r"(\d+)(\D*)$", str(v))
+        if not m:
+            continue
+        n = int(m.group(1))
+        if best_n is None or n > best_n:
+            best, best_n = str(v), n
+    return best
+
+
+def resolve_routine_values(motif: dict, examples: list | None = None,
+                           last_values: dict | None = None) -> dict:
+    """Decide the value to USE for each parameter the routine sets. A constant value stays; a
+    variable one (e.g. Mark) becomes the NEXT in its observed sequence — incremented from the value
+    we last set (project memory), or from the highest value seen in the recorded examples."""
+    examples = examples or []
+    last_values = last_values or {}
+
+    def _clean(v):
+        return None if v is None or str(v).strip().lower() in ("", "none", "null") else v
+
+    out: dict = {}
+    for s in (motif.get("steps", []) if isinstance(motif, dict) else []):
+        pn = s.get("param_name")
+        if not pn:
+            continue
+        ptype = (s.get("param_value_type") or "").lower()
+        pv = _clean(s.get("param_value"))
+        if pv is not None and ptype != "variable":
+            out[pn] = pv                                # constant — use as recorded
+            continue
+        # variable → next in sequence: prefer the value we set last time, else the highest seen in
+        # the recorded examples (and skip junk like a stray "None" from a past malformed run).
+        nxt = next_in_sequence(_clean(last_values.get(pn)))
+        if nxt is None:
+            seen = [_clean(a.get("param_value_after") or a.get("param_value"))
+                    for e in examples for a in (e.get("actions") or [])
+                    if a.get("param_name") == pn]
+            nxt = next_in_sequence(_max_in_sequence([v for v in seen if v is not None]))
+        if nxt is not None:
+            out[pn] = nxt
+    return out
+
+
+def required_steps_from_motif(motif: dict, param_values: dict | None = None) -> list[dict]:
     """The must-happen steps of a routine, for completion enforcement: place / set_parameter / tag.
-    Reads the Pattern Agent's actual fields (action_type, family_name, …) with legacy fallbacks."""
+    Reads the Pattern Agent's actual fields (action_type, family_name, …) with legacy fallbacks.
+    `param_values` (from resolve_routine_values) fills in the concrete value for each parameter."""
     steps = motif.get("steps", []) if isinstance(motif, dict) else []
+    pvals = param_values or {}
     out: list[dict] = []
     for s in steps:
         a = (s.get("action_type") or s.get("action") or "").lower()
@@ -435,7 +499,9 @@ def required_steps_from_motif(motif: dict) -> list[dict]:
         elif "tag" in a:
             out.append({"type": "tag"})
         elif "param" in a or s.get("param_name"):
-            out.append({"type": "set_parameter", "name": s.get("param_name"), "value": s.get("param_value")})
+            pn = s.get("param_name")
+            out.append({"type": "set_parameter", "name": pn,
+                        "value": pvals.get(pn, s.get("param_value"))})
     return out
 
 
@@ -656,17 +722,20 @@ def run_executor(
             "attempts": attempts, "tool_calls": tool_calls, "usage": usage}
 
 
-def build_goal(motif: dict, location: dict | None = None) -> str:
+def build_goal(motif: dict, location: dict | None = None, param_values: dict | None = None) -> str:
     """Turn a detected routine (motif + steps) into the executor's goal prompt. Reads the Pattern
-    Agent's real step fields (action_type, family_name, tag_family_name, param_name/value)."""
+    Agent's real step fields (action_type, family_name, tag_family_name, param_name/value).
+    `param_values` (from resolve_routine_values) supplies the concrete value for each parameter —
+    constants as recorded, variables as the next in sequence (e.g. Mark D-105 -> D-106)."""
     steps = motif.get("steps", []) if isinstance(motif, dict) else []
+    pvals = param_values or {}
     lines = [f"Routine: {motif.get('name', 'Detected routine')}", "Steps to reproduce IN ORDER:"]
     for i, s in enumerate(steps, 1):
         a = (s.get("action_type") or s.get("action") or "").strip()
         al = a.lower()
         fam = s.get("family_name") or s.get("family_type") or ""
         pn = s.get("param_name") or ""
-        pv = s.get("param_value")
+        pv = pvals.get(pn, s.get("param_value")) if pn else None
         tagfam = s.get("tag_family_name") or ""
         if ("place" in al or "create" in al) and fam:
             lines.append(f"  {i}. Place the family '{fam}'.")
@@ -677,7 +746,8 @@ def build_goal(motif: dict, location: dict | None = None) -> str:
                 lines.append(f"  {i}. Set parameter '{pn}' on the placed element "
                              "(value is provided at runtime — ask the user if you don't have it).")
             else:
-                lines.append(f"  {i}. Set parameter '{pn}' = '{pv}' on the placed element.")
+                lines.append(f"  {i}. Set parameter '{pn}' = '{pv}' on the placed element "
+                             "(this is the next value in the sequence — use it as-is).")
         elif a:
             lines.append(f"  {i}. {a}.")
     if location:

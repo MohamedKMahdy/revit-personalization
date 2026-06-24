@@ -47,7 +47,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
 from orchestrator.executor_agent import (run_executor, build_goal, required_steps_from_motif,
-                                          placed_element_id)
+                                          placed_element_id, resolve_routine_values)
 from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -767,7 +767,12 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
 
     # Load project memory and steer the run with what we already know (Claude-Code style).
     routine_id, label = rec.get("id", ""), rec.get("label", "")
-    memory_block = pm.to_prompt(pm.load(), routine_id)
+    _mem = pm.load()
+    memory_block = pm.to_prompt(_mem, routine_id)
+    # Resolve the value to use for each parameter: constants as recorded, variables (e.g. Mark) as
+    # the NEXT in sequence — from the value we last set (memory), else the highest in the examples.
+    _last_vals = ((_mem.get("routines", {}) or {}).get(routine_id, {}) or {}).get("last_values", {})
+    param_values = resolve_routine_values(motif, rec.get("examples", []), _last_vals)
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -795,9 +800,9 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
             yield ("data: " + json.dumps({"kind": "memory",
                    "payload": "Using what I remember about this project."}) + "\n\n")
         task = asyncio.create_task(asyncio.to_thread(
-            run_executor, build_goal(motif, location),
+            run_executor, build_goal(motif, location, param_values),
             on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block,
-            required=required_steps_from_motif(motif)))
+            required=required_steps_from_motif(motif, param_values)))
         idle = 0
         while not (task.done() and queue.empty()):
             try:
@@ -817,7 +822,7 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
             rec["status"] = "executed"
         _save_history()
 
-        _log_executor_run(routine_id, label, build_goal(motif, location), result)
+        _log_executor_run(routine_id, label, build_goal(motif, location, param_values), result)
 
         # Write back what the executor learned (family substitution, host wall, values) so the
         # assistant goes straight to it next time — this is the project understanding accruing.

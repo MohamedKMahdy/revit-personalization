@@ -413,6 +413,42 @@ def test_required_steps_from_motif():
     ]
 
 
+def test_next_in_sequence():
+    assert ex.next_in_sequence("D-105") == "D-106"
+    assert ex.next_in_sequence("1002") == "1003"
+    assert ex.next_in_sequence("W-09") == "W-10"        # preserve zero-padding width
+    assert ex.next_in_sequence("D-099") == "D-100"
+    assert ex.next_in_sequence("Room 5") == "Room 6"
+    assert ex.next_in_sequence("ABC") is None           # no number to increment
+    assert ex.next_in_sequence(None) is None
+
+
+def test_resolve_routine_values_constants_and_sequences():
+    motif = {"steps": [
+        {"action_type": "Place", "family_name": "M_Door"},
+        {"action_type": "SetParam", "param_name": "Mark", "param_value": None, "param_value_type": "variable"},
+        {"action_type": "SetParam", "param_name": "Width", "param_value": "900", "param_value_type": "constant"},
+    ]}
+    # variable Mark resolves from the value we set last time (memory); constant Width stays
+    vals = ex.resolve_routine_values(motif, examples=[], last_values={"Mark": "D-105"})
+    assert vals == {"Mark": "D-106", "Width": "900"}
+    # no memory yet → take the highest Mark from the recorded examples and go next
+    examples = [{"actions": [{"param_name": "Mark", "param_value_after": "D-101"}]},
+                {"actions": [{"param_name": "Mark", "param_value_after": "D-103"}]}]
+    vals2 = ex.resolve_routine_values(motif, examples=examples, last_values={})
+    assert vals2["Mark"] == "D-104" and vals2["Width"] == "900"
+
+
+def test_goal_and_required_use_resolved_values():
+    motif = {"name": "Door", "steps": [
+        {"action_type": "Place", "family_name": "M_Door"},
+        {"action_type": "SetParam", "param_name": "Mark", "param_value": None, "param_value_type": "variable"},
+    ]}
+    pv = {"Mark": "D-106"}
+    assert "Set parameter 'Mark' = 'D-106'" in ex.build_goal(motif, None, pv)
+    assert {"type": "set_parameter", "name": "Mark", "value": "D-106"} in ex.required_steps_from_motif(motif, pv)
+
+
 def test_required_steps_and_goal_read_real_motif_fields():
     """The Pattern Agent emits action_type / family_name / tag_family_name — not action / family_type."""
     motif = {"name": "Place Window + Marks", "steps": [

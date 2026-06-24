@@ -177,7 +177,10 @@ def record_execution(mem: dict, routine_id: str, *, host_wall_id=None,
     if host_wall_id:
         r["last_host_wall_id"] = int(host_wall_id)
     if values:
-        r["last_values"].update({k: str(v) for k, v in values.items()})
+        # don't pollute memory with empty / "None" / "null" values (a stray one breaks the next-in-
+        # sequence resolution — see executor_agent.resolve_routine_values).
+        r["last_values"].update({k: str(v) for k, v in values.items()
+                                 if v is not None and str(v).strip().lower() not in ("none", "null", "")})
 
 
 def remember_loaded_families(mem: dict, category: str, families: list[str]) -> None:
