@@ -208,6 +208,9 @@ YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
   retry place_element at that point — or pass host_wall_id if you know a wall.
 - "created 0" / "type not found" / "family not loaded": call get_available_family_types for
   the category, pick the CLOSEST loaded family to what the routine asked for, and retry.
+- A structured tool returning an error is EXPECTED and recoverable — stay on the structured tools
+  and fix the call. NEVER respond to a place/set/tag/create failure by switching to the Revit API
+  fallback; that tool is only for operations no structured tool supports (see below).
 - After 3 failed attempts on the SAME step, stop and explain what you tried and why you're stuck.
 
 Apply the routine's parameters and tag once the element is placed. When the routine is fully
@@ -223,14 +226,22 @@ reach for the advanced tools when the goal needs them or to gather context. All 
 MILLIMETRES. Tools marked DESTRUCTIVE (delete_element, operate_element, execute_transaction_group)
 change or remove existing work — use them only when the goal clearly asks for it.
 
-REVIT API FALLBACK (execute_revit_api) — your escape hatch when the backend has no tool for the
-step. If, after checking, NO structured tool can do what the goal needs, write a small C# snippet
-against the live Revit API instead of giving up. Discipline: (1) exhaust the structured tools
-first — the fallback is a last resort, not a shortcut; (2) for anything you're unsure about,
-query READ-ONLY first (transactionMode 'none') to learn the model, THEN write; (3) keep snippets
-minimal and scoped strictly to the goal; (4) writes run in one undoable transaction — never touch
-elements the goal didn't ask about; (5) say in 'purpose' what the code does. If the fallback is
-disabled you'll be told — then explain what you'd need instead.
+REVIT API FALLBACK (execute_revit_api) — for a MISSING CAPABILITY, not a failed tool.
+Draw this line sharply:
+  • A structured tool EXISTS for what you're doing (place_element, set_parameter, tag_element,
+    create_*, pick_point, the query tools…) but it returned an error → this is NORMAL. It is NOT
+    a missing capability. Do NOT switch to execute_revit_api. Diagnose and RETRY with the
+    structured tools: pick a different point/host (pick_point), choose a loaded family
+    (get_available_family_types), fix the parameter value, query the model with the read tools.
+  • There is genuinely NO structured tool for the operation (e.g. rename a view, join two walls,
+    set a project-information parameter, change a workset) → only THEN write a small C# snippet.
+A tool failing is your cue to fix the structured call, never your cue to drop to the API. Reaching
+for execute_revit_api just because place/set/tag failed is the wrong move — the user does not want
+raw API used in place of the tools that already do the job. When you DO use it (true gap only):
+query READ-ONLY first (transactionMode 'none') if unsure; keep the snippet minimal and scoped to
+the goal; writes run in one undoable transaction — never touch elements the goal didn't ask about;
+state in 'purpose' which structured tool you tried and why it cannot express this. If it's disabled
+you'll be told — then explain what you'd need instead.
 """
 
 
@@ -365,6 +376,20 @@ def needs_confirmation(name: str, args: dict) -> bool:
     return False
 
 
+# Programmatic brake against treating a structured-tool failure as a reason to drop to raw API.
+# The FIRST time the agent reaches for execute_revit_api after working with structured tools, this
+# nudge is returned instead of running it; the agent must reaffirm (call it again) to proceed — so
+# a genuine capability gap still gets through, but a knee-jerk escalation gets redirected.
+API_NUDGE = (
+    "Not yet — execute_revit_api is ONLY for operations NO structured tool supports. A structured "
+    "tool failing is not a missing capability. Re-check the tools and retry the structured way: "
+    "re-pick the host (pick_point), choose a loaded family (get_available_family_types), correct the "
+    "parameter, or query the model with the read tools. If — and only if — NO structured tool can "
+    "express THIS specific operation (e.g. rename a view, join walls, set a project parameter), call "
+    "execute_revit_api again with a 'purpose' naming the structured tool you tried, and it will run."
+)
+
+
 def run_executor(
     goal: str,
     *,
@@ -372,6 +397,7 @@ def run_executor(
     dispatch_fn: Callable[[str, dict], dict] = real_dispatch,
     on_event: Callable[[str, Any], None] | None = None,
     confirm_fn: Callable[[str, dict], bool] | None = None,
+    guard_api_fallback: bool = True,
     max_iters: int = MAX_ITERS,
     model: str = EXECUTOR_MODEL,
     memory_block: str = "",
@@ -394,6 +420,7 @@ def run_executor(
     messages: list[dict] = [{"role": "user", "content": goal}]
     tool_calls: list[dict] = []
     attempts = 0
+    api_reaffirmed = False     # has the agent reaffirmed an API-fallback escalation this turn?
 
     for _ in range(max_iters):
         try:
@@ -428,7 +455,11 @@ def run_executor(
                 result = {"success": False, "message": f"tool '{name}' is not allowed"}
             else:
                 emit("tool", {"name": name, "args": args})
-                if confirm_fn is not None and needs_confirmation(name, args) and not confirm_fn(name, args):
+                if guard_api_fallback and name == "execute_revit_api" and not api_reaffirmed:
+                    # First escalation to raw API this turn — redirect to structured tools once.
+                    api_reaffirmed = True
+                    result = {"success": False, "message": API_NUDGE}
+                elif confirm_fn is not None and needs_confirmation(name, args) and not confirm_fn(name, args):
                     result = {"success": False,
                               "message": "The user declined to run this Revit API code. Do not retry "
                                          "it; use a structured tool instead, or explain what you'd need."}
@@ -438,6 +469,9 @@ def run_executor(
                     except Exception as exc:
                         result = {"success": False, "message": f"dispatch raised: {exc}"}
                 emit("result", {"name": name, "result": result})
+            # Re-arm the nudge after any non-API tool, so each fresh escalation is challenged once.
+            if name != "execute_revit_api":
+                api_reaffirmed = False
             tool_calls.append({"name": name, "args": args, "result": result})
             results_content.append({
                 "type": "tool_result", "tool_use_id": tid,

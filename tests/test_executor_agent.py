@@ -332,6 +332,7 @@ def test_confirm_gate_blocks_write_when_declined():
         return {"success": True, "result": "ok"}
 
     out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch,
+                          guard_api_fallback=False,            # isolate the confirm gate from the nudge
                           confirm_fn=lambda n, a: (confirms.append(n) or False))
     assert confirms == ["execute_revit_api"]                  # gate consulted
     assert "execute_revit_api" not in dispatched              # never dispatched
@@ -345,7 +346,7 @@ def test_confirm_gate_allows_when_approved():
         Resp([_txt("done")]),
     ]
     dispatched = []
-    out = ex.run_executor("goal", client=FakeClient(script),
+    out = ex.run_executor("goal", client=FakeClient(script), guard_api_fallback=False,
                           dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True, "result": "1"}),
                           confirm_fn=lambda n, a: True)
     assert dispatched == ["execute_revit_api"] and out["tool_calls"][0]["result"]["success"] is True
@@ -358,11 +359,45 @@ def test_confirm_gate_skips_readonly_api_calls():
         Resp([_txt("done")]),
     ]
     confirms, dispatched = [], []
-    out = ex.run_executor("goal", client=FakeClient(script),
+    out = ex.run_executor("goal", client=FakeClient(script), guard_api_fallback=False,
                           dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True}),
                           confirm_fn=lambda n, a: (confirms.append(n) or False))
     assert confirms == []                       # read-only not gated
     assert dispatched == ["execute_revit_api"]  # ran despite confirm_fn=False
+
+
+def test_api_fallback_nudged_then_allowed_on_reaffirm():
+    """The first escalation to raw API is redirected (nudged); the agent must reaffirm to run it."""
+    script = [
+        Resp([_tu("execute_revit_api", {"purpose": "p1", "code": "return 1;", "transactionMode": "none"}, "t1")]),
+        Resp([_tu("execute_revit_api", {"purpose": "reaffirm: no tool renames a view",
+                                        "code": "return 1;", "transactionMode": "none"}, "t2")]),
+        Resp([_txt("done")]),
+    ]
+    dispatched = []
+    out = ex.run_executor("goal", client=FakeClient(script),     # guard on by default
+                          dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True, "result": "1"}))
+    assert [c["name"] for c in out["tool_calls"]] == ["execute_revit_api", "execute_revit_api"]
+    assert dispatched == ["execute_revit_api"]                   # only the SECOND (reaffirmed) ran
+    assert out["tool_calls"][0]["result"]["success"] is False    # first was nudged, not run
+    assert "ONLY for operations" in out["tool_calls"][0]["result"]["message"]
+    assert out["tool_calls"][1]["result"]["success"] is True
+
+
+def test_api_nudge_rearms_after_a_structured_tool():
+    """A structured tool between API attempts re-arms the nudge — each fresh escalation is challenged."""
+    script = [
+        Resp([_tu("execute_revit_api", {"purpose": "p", "code": "return 1;", "transactionMode": "none"}, "t1")]),
+        Resp([_tu("get_active_view", {}, "t2")]),
+        Resp([_tu("execute_revit_api", {"purpose": "p", "code": "return 1;", "transactionMode": "none"}, "t3")]),
+        Resp([_txt("ok")]),
+    ]
+    dispatched = []
+    out = ex.run_executor("goal", client=FakeClient(script),
+                          dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True}))
+    assert dispatched == ["get_active_view"]                     # both API calls nudged, not run
+    assert out["tool_calls"][0]["result"]["success"] is False
+    assert out["tool_calls"][2]["result"]["success"] is False    # nudged again after the re-arm
 
 
 def test_events_streamed():

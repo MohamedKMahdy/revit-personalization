@@ -139,6 +139,41 @@ def _next_confirm_id() -> str:
         return f"cfm{_confirm_seq}"
 
 
+_EXECUTOR_LOG = (Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
+                 / "RevitPersonalization" / "logs" / "executor_runs.jsonl")
+
+
+def _log_executor_run(routine_id: str, label: str, goal: str, result: dict) -> None:
+    """Append a compact record of an agentic execution run so it can be inspected on disk.
+    Each step logs the tool, success, and (for the Revit API fallback) its purpose/mode — so an
+    over-eager drop to execute_revit_api is visible in the log instead of being invisible."""
+    try:
+        steps = []
+        for c in result.get("tool_calls", []):
+            r = c.get("result") or {}
+            step = {"tool": c.get("name"), "ok": bool(r.get("success"))}
+            if not r.get("success"):
+                step["msg"] = str(r.get("message", ""))[:200]
+            if c.get("name") == "execute_revit_api":
+                a = c.get("args") or {}
+                step["purpose"] = a.get("purpose", "")
+                step["mode"] = a.get("transactionMode", "auto")
+            steps.append(step)
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "user": pm.current_user(), "routine_id": routine_id, "label": label,
+            "goal": (goal or "")[:200],
+            "done": bool(result.get("done")), "attempts": result.get("attempts"),
+            "api_fallback_calls": sum(1 for s in steps if s["tool"] == "execute_revit_api"),
+            "steps": steps,
+        }
+        _EXECUTOR_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _EXECUTOR_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def _strip_tokens(text: str) -> str:
     return _TOKEN_RE.sub("", text).strip()
 
@@ -770,6 +805,8 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         if result.get("done"):
             rec["status"] = "executed"
         _save_history()
+
+        _log_executor_run(routine_id, label, build_goal(motif, location), result)
 
         # Write back what the executor learned (family substitution, host wall, values) so the
         # assistant goes straight to it next time — this is the project understanding accruing.
