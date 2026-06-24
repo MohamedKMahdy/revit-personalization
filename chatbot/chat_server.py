@@ -126,7 +126,7 @@ def _lock_for(pid: str) -> asyncio.Lock:
 
 _TOKEN_RE = re.compile(
     r"##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##"
-    r"|##REMEMBER:[^#]*##"
+    r"|##REMEMBER:[^#]*##|##PARAM:[^#]*##"
 )
 
 # Pending API-fallback confirmations: confirm_id -> {"event": threading.Event, "approved": bool|None}.
@@ -324,8 +324,10 @@ parameters if needed, then execute or dismiss based on their decision.
 - When the user declines (no / dismiss / cancel / not now / skip), output exactly:
     ##DISMISS##
   as its own line, then a brief acknowledgment.
-- If the user wants to change a parameter (e.g. "change the mark to D-201"), acknowledge
-  the change in your reply. The execution engine will apply it.
+- If the user gives a VALUE for a parameter (e.g. "set the mark to 240", "comments = foo",
+  "change the mark to D-201"), output a token on its own line: ##PARAM:Name=Value## (e.g.
+  ##PARAM:Mark=240##), then acknowledge it. The execution engine sets that EXACT value when it
+  runs — without the token, it would auto-pick the next value in the sequence instead.
 - MEMORY: when the user tells you a DURABLE preference or fact about how they work — their
   naming/Mark scheme, a default family, "always let me pick the location", "I'm an architect",
   units, etc. (NOT one-off values for this run) — persist it by outputting a token on its own
@@ -448,6 +450,11 @@ async def _stream(rec: dict, user_text: str | None = None) -> AsyncIterator[str]
                 pm.save(mem)
             except Exception:
                 pass
+
+        # User-specified parameter values (##PARAM:Name=Value##) override the auto-sequence at
+        # execute time, so "set the mark to 240" actually places the element with Mark=240.
+        for nm, val in re.findall(r"##PARAM:([^=#]+)=([^#]*)##", full):
+            rec.setdefault("param_overrides", {})[nm.strip()] = val.strip()
 
         # Parse optional location token: ##LOCATION:x,y,z##
         loc_match = re.search(r"##LOCATION:([-\d.]+),([-\d.]+),([-\d.]+)##", full)
@@ -774,6 +781,7 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
     # the NEXT in sequence — from the value we last set (memory), else the highest in the examples.
     _last_vals = ((_mem.get("routines", {}) or {}).get(routine_id, {}) or {}).get("last_values", {})
     param_values = resolve_routine_values(motif, rec.get("examples", []), _last_vals)
+    param_values.update(rec.get("param_overrides") or {})   # a value the user typed in chat wins
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -1137,7 +1145,7 @@ function esc(s){
     .replace(/\n/g,'<br>');
 }
 function stripTokens(s){
-  return s.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##|##REMEMBER:[^#]*##/g,'').trim();
+  return s.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##|##REMEMBER:[^#]*##|##PARAM:[^#]*##/g,'').trim();
 }
 function withPid(body){ return Object.assign({pattern_id:_curId}, body||{}); }
 
