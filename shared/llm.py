@@ -21,6 +21,32 @@ parameter, so callers consult is_gemini()/supports_thinking() to drop those.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load the project .env into the environment (keys not already set), so the model switch,
+    GEMINI_API_KEY, etc. can be configured from .env without an external dependency. An explicit
+    shell variable always wins. Runs once on import."""
+    here = Path(__file__).resolve()
+    for parent in (here.parent, *here.parents):
+        env = parent / ".env"
+        if env.exists():
+            try:
+                for line in env.read_text(encoding="utf-8").splitlines():
+                    s = line.strip()
+                    if not s or s.startswith("#") or "=" not in s:
+                        continue
+                    k, v = s.split("=", 1)
+                    k = k.strip()
+                    if k and k not in os.environ:
+                        os.environ[k] = v.strip().strip('"').strip("'")
+            except Exception:
+                pass
+            return
+
+
+_load_dotenv()
 
 # alias → the model string actually sent on the request.
 # Gemini names are the public model_name the LiteLLM proxy serves (see litellm_config.yaml).

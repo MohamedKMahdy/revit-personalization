@@ -27,10 +27,20 @@ through the proxy and automatically drops the Claude-only `thinking` and `cache_
 
 ## Using Gemini (one-time setup)
 
-1. Get a free key at Google AI Studio → set it: `$env:GEMINI_API_KEY = "..."`
+1. Get a free key at Google AI Studio → put `GEMINI_API_KEY=...` in `.env` (auto-loaded).
 2. `pip install --user "litellm[proxy]"`
-3. Start the proxy: `litellm --config litellm_config.yaml --port 4000`
-4. Point any role at `gemini` (above) and run as normal.
+3. Start the proxy **from the repo root, with UTF-8 I/O** (Windows console is cp1252 and LiteLLM's
+   startup banner crashes without this):
+   ```powershell
+   $env:PYTHONUTF8 = "1"; $env:PYTHONIOENCODING = "utf-8"
+   litellm --config litellm_config.yaml --port 4000
+   ```
+   The proxy reads `GEMINI_API_KEY` from `.env` in the current directory. Verify: `curl http://127.0.0.1:4000/health/liveliness`.
+4. Set the switch in `.env` (`LLM_MODEL_DEFAULT=gemini`, or a role like `EXECUTOR_MODEL=gemini`) and
+   start the app as normal. The app needs no Gemini key — only the proxy does.
+
+To go back to Claude (for eval / reported runs): comment out `LLM_MODEL_DEFAULT=gemini` in `.env`
+and restart the server. The proxy can keep running; Claude routes around it.
 
 ## Caveats (read before relying on it)
 
