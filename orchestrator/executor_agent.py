@@ -357,12 +357,21 @@ def _text_of(blocks: list) -> str:
     return " ".join(getattr(b, "text", "") for b in blocks if getattr(b, "type", None) == "text").strip()
 
 
+def needs_confirmation(name: str, args: dict) -> bool:
+    """Which tool calls must pause for an explicit user OK before running. Today: any
+    Revit API fallback that WRITES (transactionMode != 'none') — read-only queries run free."""
+    if name == "execute_revit_api":
+        return str((args or {}).get("transactionMode", "auto")).lower() != "none"
+    return False
+
+
 def run_executor(
     goal: str,
     *,
     client: Any = None,
     dispatch_fn: Callable[[str, dict], dict] = real_dispatch,
     on_event: Callable[[str, Any], None] | None = None,
+    confirm_fn: Callable[[str, dict], bool] | None = None,
     max_iters: int = MAX_ITERS,
     model: str = EXECUTOR_MODEL,
     memory_block: str = "",
@@ -373,6 +382,8 @@ def run_executor(
     `client` defaults to a fresh Anthropic client; inject a fake for testing.
     `dispatch_fn` runs a tool in Revit; inject a fake to test without a live model.
     `on_event(kind, payload)` streams progress: kind ∈ {reasoning, tool, result, done, error}.
+    `confirm_fn(name, args) -> bool` is consulted before dispatching a confirmation-gated tool
+    (see needs_confirmation); returning False blocks the call with a 'user declined' result.
     """
     if client is None:
         import anthropic
@@ -417,10 +428,15 @@ def run_executor(
                 result = {"success": False, "message": f"tool '{name}' is not allowed"}
             else:
                 emit("tool", {"name": name, "args": args})
-                try:
-                    result = dispatch_fn(name, args)
-                except Exception as exc:
-                    result = {"success": False, "message": f"dispatch raised: {exc}"}
+                if confirm_fn is not None and needs_confirmation(name, args) and not confirm_fn(name, args):
+                    result = {"success": False,
+                              "message": "The user declined to run this Revit API code. Do not retry "
+                                         "it; use a structured tool instead, or explain what you'd need."}
+                else:
+                    try:
+                        result = dispatch_fn(name, args)
+                    except Exception as exc:
+                        result = {"success": False, "message": f"dispatch raised: {exc}"}
                 emit("result", {"name": name, "result": result})
             tool_calls.append({"name": name, "args": args, "result": result})
             results_content.append({

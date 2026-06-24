@@ -310,6 +310,61 @@ def test_execute_revit_api_disabled(monkeypatch):
     assert out["success"] is False and "disabled" in out["message"].lower()
 
 
+def test_needs_confirmation():
+    assert ex.needs_confirmation("execute_revit_api", {"transactionMode": "auto"}) is True
+    assert ex.needs_confirmation("execute_revit_api", {}) is True                 # defaults to auto
+    assert ex.needs_confirmation("execute_revit_api", {"transactionMode": "none"}) is False  # read-only
+    assert ex.needs_confirmation("place_element", {}) is False
+    assert ex.needs_confirmation("delete_element", {}) is False                   # gate is API-only
+
+
+def test_confirm_gate_blocks_write_when_declined():
+    """A write via execute_revit_api is NOT run when the user declines; the agent is told."""
+    script = [
+        Resp([_tu("execute_revit_api",
+                  {"purpose": "rename view", "code": "document.ActiveView.Name=\"X\";", "transactionMode": "auto"}, "t1")]),
+        Resp([_txt("Understood — I won't run that.")]),
+    ]
+    dispatched, confirms = [], []
+
+    def fake_dispatch(name, args):
+        dispatched.append(name)
+        return {"success": True, "result": "ok"}
+
+    out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch,
+                          confirm_fn=lambda n, a: (confirms.append(n) or False))
+    assert confirms == ["execute_revit_api"]                  # gate consulted
+    assert "execute_revit_api" not in dispatched              # never dispatched
+    assert out["tool_calls"][0]["result"]["success"] is False
+    assert "declined" in out["tool_calls"][0]["result"]["message"].lower()
+
+
+def test_confirm_gate_allows_when_approved():
+    script = [
+        Resp([_tu("execute_revit_api", {"purpose": "p", "code": "return 1;", "transactionMode": "auto"}, "t1")]),
+        Resp([_txt("done")]),
+    ]
+    dispatched = []
+    out = ex.run_executor("goal", client=FakeClient(script),
+                          dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True, "result": "1"}),
+                          confirm_fn=lambda n, a: True)
+    assert dispatched == ["execute_revit_api"] and out["tool_calls"][0]["result"]["success"] is True
+
+
+def test_confirm_gate_skips_readonly_api_calls():
+    """A read-only API query (transactionMode none) runs without prompting."""
+    script = [
+        Resp([_tu("execute_revit_api", {"purpose": "count", "code": "return 1;", "transactionMode": "none"}, "t1")]),
+        Resp([_txt("done")]),
+    ]
+    confirms, dispatched = [], []
+    out = ex.run_executor("goal", client=FakeClient(script),
+                          dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True}),
+                          confirm_fn=lambda n, a: (confirms.append(n) or False))
+    assert confirms == []                       # read-only not gated
+    assert dispatched == ["execute_revit_api"]  # ran despite confirm_fn=False
+
+
 def test_events_streamed():
     """on_event must emit reasoning / tool / result / done so the chat can stream it."""
     script = [

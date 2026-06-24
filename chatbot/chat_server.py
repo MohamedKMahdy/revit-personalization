@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -122,6 +123,20 @@ _TOKEN_RE = re.compile(
     r"##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##"
     r"|##REMEMBER:[^#]*##"
 )
+
+# Pending API-fallback confirmations: confirm_id -> {"event": threading.Event, "approved": bool|None}.
+# The executor worker thread registers one and BLOCKS on the event; /api/execute-confirm resolves it.
+_pending_confirms: dict[str, dict] = {}
+_confirm_seq = 0
+_confirm_lock = threading.Lock()
+CONFIRM_TIMEOUT_S = 300.0
+
+
+def _next_confirm_id() -> str:
+    global _confirm_seq
+    with _confirm_lock:
+        _confirm_seq += 1
+        return f"cfm{_confirm_seq}"
 
 
 def _strip_tokens(text: str) -> str:
@@ -715,17 +730,37 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         # bridge the synchronous executor thread → the async SSE queue
         loop.call_soon_threadsafe(queue.put_nowait, {"kind": kind, "payload": payload})
 
+    def confirm_fn(name, args):
+        # Pause the executor (worker thread) and ask the user to OK a model-mutating Revit API
+        # snippet. Emits a 'confirm' event with the code, then blocks until /api/execute-confirm
+        # resolves it (or it times out → treated as a decline).
+        cid = _next_confirm_id()
+        ev = threading.Event()
+        _pending_confirms[cid] = {"event": ev, "approved": None}
+        loop.call_soon_threadsafe(queue.put_nowait, {"kind": "confirm", "payload": {
+            "id": cid, "tool": name, "purpose": args.get("purpose", ""),
+            "code": args.get("code", ""), "mode": args.get("transactionMode", "auto")}})
+        got = ev.wait(timeout=CONFIRM_TIMEOUT_S)
+        rec_c = _pending_confirms.pop(cid, None)
+        return bool(got and rec_c and rec_c.get("approved"))
+
     async def gen():
         if memory_block:
             yield ("data: " + json.dumps({"kind": "memory",
                    "payload": "Using what I remember about this project."}) + "\n\n")
         task = asyncio.create_task(asyncio.to_thread(
-            run_executor, build_goal(motif, location), on_event=on_event, memory_block=memory_block))
+            run_executor, build_goal(motif, location),
+            on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block))
+        idle = 0
         while not (task.done() and queue.empty()):
             try:
                 ev = await asyncio.wait_for(queue.get(), timeout=0.25)
                 yield f"data: {json.dumps(ev)}\n\n"
+                idle = 0
             except asyncio.TimeoutError:
+                idle += 1
+                if idle % 20 == 0:           # ~5s heartbeat keeps the stream warm while
+                    yield ": ping\n\n"        # the executor blocks on a confirmation
                 continue
         result = await task
         for c in result.get("tool_calls", []):
@@ -751,6 +786,61 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+class ConfirmIn(BaseModel):
+    id: str = ""
+    approved: bool = False
+
+
+@app.post("/api/execute-confirm")
+async def api_execute_confirm(body: ConfirmIn):
+    """Resolve a pending API-fallback confirmation (Approve / Reject from the chat UI)."""
+    rec_c = _pending_confirms.get(body.id)
+    if rec_c is None:
+        return {"ok": False, "error": "unknown or expired confirmation"}
+    rec_c["approved"] = bool(body.approved)
+    rec_c["event"].set()          # unblocks the waiting executor thread
+    return {"ok": True, "approved": bool(body.approved)}
+
+
+# ── Per-user memory (what the assistant remembers about you) ───────────────────────
+@app.get("/api/memory")
+async def api_memory():
+    """The current user's persistent memory, for the chat UI's memory panel."""
+    mem = pm.load()
+    u = mem.get("user", {})
+    routines = {rid: {"label": r.get("label", ""), "executions": r.get("executions", 0)}
+                for rid, r in (mem.get("routines") or {}).items()}
+    families = {cat.replace("OST_", ""): fams
+                for cat, fams in ((mem.get("project") or {}).get("loaded_families") or {}).items()}
+    return {
+        "user_id": pm.current_user(),
+        "name": u.get("name_hint", ""), "role": u.get("role_hint", ""),
+        "preferences": u.get("preferences", []),
+        "conventions": u.get("conventions", {}),
+        "notes": u.get("notes", []),
+        "loaded_families": families,
+        "routines": routines,
+    }
+
+
+class ForgetIn(BaseModel):
+    text: str = ""
+
+
+@app.post("/api/memory/forget")
+async def api_memory_forget(body: ForgetIn):
+    """Let the user delete a remembered preference/note (data control — OpenClaw/GDPR style)."""
+    text = (body.text or "").strip()
+    if not text:
+        return {"ok": False, "error": "nothing to forget"}
+    mem = pm.load()
+    u = mem.setdefault("user", {})
+    u["preferences"] = [p for p in u.get("preferences", []) if p != text]
+    u["notes"] = [n for n in u.get("notes", []) if n != text]
+    pm.save(mem)
+    return {"ok": True}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -890,6 +980,49 @@ body{font-family:var(--font);
           font-family:var(--font)}
 .btn-send:hover{background:var(--tum-d)}
 .btn-send:disabled{opacity:.45;cursor:not-allowed}
+
+/* ── API-fallback confirmation card (in the chat) ── */
+.cfm-card{align-self:stretch;border:1px solid var(--tum-orange);border-radius:12px;
+          background:#fff8f2;padding:12px 14px;box-shadow:0 1px 3px rgba(227,114,34,.15)}
+.cfm-hd{font-size:13px;font-weight:600;color:#9a4a13;display:flex;align-items:center;gap:8px}
+.cfm-mode{font-size:11px;font-weight:600;background:#f3ddca;color:#8a4413;
+          padding:2px 8px;border-radius:10px}
+.cfm-purpose{font-size:12.5px;color:#5a5a5a;margin:7px 0 6px}
+.cfm-code{background:#0A2D57;color:#dce8f7;font-family:var(--font-mono,Consolas,monospace);
+          font-size:12px;line-height:1.5;padding:10px 12px;border-radius:8px;margin:6px 0 10px;
+          white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
+.cfm-btns{display:flex;gap:8px}
+.cfm-b{padding:7px 16px;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer}
+.cfm-ok{background:var(--tum-green);color:#fff}
+.cfm-ok:hover{background:var(--tum-green-d)}
+.cfm-no{background:#eee;color:#444;border:1px solid #d6d6d6}
+.cfm-no:hover{background:#e2e2e2}
+.cfm-done{font-size:12.5px;font-weight:600}
+.cfm-done.ok{color:#5c6300}
+.cfm-done.no{color:#7a1318}
+
+/* ── Memory panel (sidebar) ── */
+.mem-panel{border-top:1px solid rgba(255,255,255,.10);max-height:46%;display:flex;flex-direction:column}
+.mem-hd{padding:11px 16px;font-size:13px;font-weight:600;color:#fff;
+        display:flex;align-items:center;gap:8px}
+.mem-hd .ic{font-size:14px}
+.mem-refresh{margin-left:auto;background:rgba(255,255,255,.14);color:#cdd9e8;border:none;
+             border-radius:5px;width:24px;height:24px;cursor:pointer;font-size:13px;line-height:1}
+.mem-refresh:hover{background:rgba(255,255,255,.24);color:#fff}
+.mem-body{overflow-y:auto;padding:2px 10px 12px}
+.mem-who{font-size:12.5px;color:#fff;font-weight:500;padding:4px 6px 8px}
+.mem-sec{font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:#7f93ad;
+         margin:9px 6px 4px}
+.mem-item{display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;
+          font-size:12px;color:#cdd9e8;line-height:1.4}
+.mem-item:hover{background:rgba(255,255,255,.05)}
+.mem-item span{flex:1;min-width:0;overflow-wrap:anywhere}
+.mem-item em{color:#7f93ad;font-style:normal}
+.mem-x{opacity:0;border:none;background:none;color:#9aa7b8;cursor:pointer;font-size:12px;
+       padding:1px 4px;border-radius:4px;flex-shrink:0}
+.mem-item:hover .mem-x{opacity:.75}
+.mem-x:hover{opacity:1;background:rgba(255,255,255,.12);color:#fff}
+.mem-empty{font-size:11.5px;color:#7f93ad;padding:8px 6px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -897,6 +1030,11 @@ body{font-family:var(--font);
 <aside class="sidebar" id="sidebar">
   <div class="sb-hdr"><span class="ic">🗂️</span> Detected Patterns</div>
   <div class="sb-list" id="sb-list"></div>
+  <div class="mem-panel" id="mem-panel">
+    <div class="mem-hd"><span class="ic">🧠</span> What I remember
+      <button class="mem-refresh" id="mem-refresh" title="Refresh">⟳</button></div>
+    <div class="mem-body" id="mem-body"></div>
+  </div>
 </aside>
 
 <div class="main">
@@ -960,6 +1098,64 @@ function addBubble(role, text){
   chat().scrollTop = 99999;
   return wrap.querySelector('.bubble');
 }
+/* ── API-fallback confirmation card ─────────────────────────────── */
+function addConfirmCard(p){
+  const card = document.createElement('div');
+  card.className = 'cfm-card';
+  const hd = document.createElement('div'); hd.className = 'cfm-hd';
+  hd.innerHTML = '⚠ Approve Revit API code? <span class="cfm-mode">'+
+    (p.mode === 'none' ? 'read-only' : 'writes model · undoable') + '</span>';
+  card.appendChild(hd);
+  if(p.purpose){ const pu = document.createElement('div'); pu.className='cfm-purpose'; pu.textContent = p.purpose; card.appendChild(pu); }
+  const pre = document.createElement('pre'); pre.className='cfm-code'; pre.textContent = p.code || ''; card.appendChild(pre);
+  const btns = document.createElement('div'); btns.className='cfm-btns';
+  const ok = document.createElement('button'); ok.className='cfm-b cfm-ok'; ok.textContent='✓ Approve & run';
+  const no = document.createElement('button'); no.className='cfm-b cfm-no'; no.textContent='✕ Reject';
+  ok.onclick = ()=>confirmApi(p.id, true, btns);
+  no.onclick = ()=>confirmApi(p.id, false, btns);
+  btns.appendChild(ok); btns.appendChild(no); card.appendChild(btns);
+  chat().appendChild(card); chat().scrollTop = 99999;
+}
+async function confirmApi(id, approved, btns){
+  btns.innerHTML = '<span class="cfm-done '+(approved?'ok':'no')+'">'+
+    (approved?'✓ Approved — running…':'✕ Rejected')+'</span>';
+  try{ await fetch('/api/execute-confirm', {method:'POST',headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({id, approved})}); }catch(e){}
+}
+
+/* ── Memory panel ───────────────────────────────────────────────── */
+async function loadMemory(){
+  let m; try{ m = await (await fetch('/api/memory')).json(); }catch(e){ return; }
+  const body = document.getElementById('mem-body'); if(!body) return;
+  body.innerHTML = '';
+  const sec = (t)=>{ const d=document.createElement('div'); d.className='mem-sec'; d.textContent=t; body.appendChild(d); };
+  const item = (text, forgettable)=>{
+    const row=document.createElement('div'); row.className='mem-item';
+    const sp=document.createElement('span'); sp.textContent=text; row.appendChild(sp);
+    if(forgettable){ const x=document.createElement('button'); x.className='mem-x'; x.textContent='✕';
+      x.title='Forget this'; x.onclick=()=>forgetMem(text); row.appendChild(x); }
+    body.appendChild(row);
+  };
+  let any=false;
+  if(m.name || m.role){ const d=document.createElement('div'); d.className='mem-who';
+    d.textContent=(m.name||'')+(m.role?(m.name?' · ':'')+m.role:''); body.appendChild(d); any=true; }
+  if((m.preferences||[]).length){ sec('Preferences'); m.preferences.forEach(x=>item(x,true)); any=true; }
+  const conv=m.conventions||{};
+  if(Object.keys(conv).length){ sec('Conventions'); Object.keys(conv).forEach(k=>item(k+' = '+conv[k],false)); any=true; }
+  if((m.notes||[]).length){ sec('Notes'); m.notes.forEach(x=>item(x,true)); any=true; }
+  const rk=Object.keys(m.routines||{});
+  if(rk.length){ sec('Learned routines'); rk.forEach(id=>item((m.routines[id].label||id)+'  ×'+m.routines[id].executions,false)); any=true; }
+  const fk=Object.keys(m.loaded_families||{});
+  if(fk.length){ sec('Loaded families'); fk.forEach(c=>item(c+': '+(m.loaded_families[c]||[]).length,false)); any=true; }
+  if(!any){ const e=document.createElement('div'); e.className='mem-empty';
+    e.textContent="Nothing yet — tell me a preference (e.g. your Mark scheme) and I'll remember it across sessions."; body.appendChild(e); }
+}
+async function forgetMem(text){
+  try{ await fetch('/api/memory/forget', {method:'POST',headers:{'Content-Type':'application/json'},
+       body: JSON.stringify({text})}); }catch(e){}
+  loadMemory();
+}
+
 function showTyping(){
   const wrap = document.createElement('div');
   wrap.className = 'msg bot'; wrap.id = 'typing';
@@ -1183,6 +1379,7 @@ async function streamFrom(url, body){
     body: JSON.stringify(withPid(body))
   });
   await consumeStream(resp);
+  loadMemory();   // a turn may have persisted a preference via ##REMEMBER##
 }
 async function startGreeting(id){
   lockUI(); showTyping();
@@ -1214,6 +1411,7 @@ async function runExec(){
     const k = ev.kind, p = ev.payload;
     if(k === 'memory'){ setStatus(`🧠 ${p}`, 'info'); }
     else if(k === 'reasoning'){ if(p && String(p).trim()) addBubble('bot', p); }
+    else if(k === 'confirm'){ addConfirmCard(p); setStatus('⏸ Waiting for your approval to run Revit API code…', 'info'); }
     else if(k === 'tool'){ setStatus(`🔧 ${p.name}…`, 'info'); }
     else if(k === 'result'){
       const ok = p.result && p.result.success;
@@ -1242,6 +1440,7 @@ async function runExec(){
   }
   unfreezeActions();
   loadPatterns();   // reflect the new "executed" status in the sidebar
+  loadMemory();     // the run may have taught the assistant new families/values
 }
 
 async function runAction(endpoint, label){
@@ -1308,6 +1507,8 @@ async function init(){
     document.getElementById('btn-dis').disabled  = true;
   }
   if(window.innerWidth < 680) document.getElementById('sidebar').classList.add('hidden');
+  const mr = document.getElementById('mem-refresh'); if(mr) mr.onclick = loadMemory;
+  loadMemory();
   setInterval(pollPatterns, 5000);
 }
 
