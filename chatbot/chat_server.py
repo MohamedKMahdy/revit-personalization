@@ -159,12 +159,18 @@ def _log_executor_run(routine_id: str, label: str, goal: str, result: dict) -> N
                 step["purpose"] = a.get("purpose", "")
                 step["mode"] = a.get("transactionMode", "auto")
             steps.append(step)
+        usage = result.get("usage") or {}
+        # Rough $ estimate at Sonnet-4.6 rates ($3/$15 per MTok; cache read 0.1x, write 1.25x).
+        # `input` is the UNCACHED remainder — cached tools/system land in cache_read at ~1/10th cost.
+        est_cost = round((usage.get("input", 0) * 3 + usage.get("cache_read", 0) * 0.30
+                          + usage.get("cache_write", 0) * 3.75 + usage.get("output", 0) * 15) / 1e6, 4)
         entry = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "user": pm.current_user(), "routine_id": routine_id, "label": label,
             "goal": (goal or "")[:200],
             "done": bool(result.get("done")), "attempts": result.get("attempts"),
             "api_fallback_calls": sum(1 for s in steps if s["tool"] == "execute_revit_api"),
+            "usage": usage, "est_cost_usd": est_cost,
             "steps": steps,
         }
         _EXECUTOR_LOG.parent.mkdir(parents=True, exist_ok=True)

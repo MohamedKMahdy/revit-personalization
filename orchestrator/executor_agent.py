@@ -182,6 +182,14 @@ TOOL_SCHEMAS: list[dict] = (
 )
 ALLOWED_TOOLS = {t["name"] for t in TOOL_SCHEMAS}
 
+# COST: the tool block (~30 verbose schemas) is identical on every call and dominates the input
+# tokens. A cache_control breakpoint on the LAST tool lets the API serve the whole tools+system
+# prefix from cache on repeat calls (~0.1x price) instead of re-billing every schema on every loop
+# iteration. Prompt caching is GA — no beta header. (Copy the last dict so we don't mutate the
+# shared revit_tools/EXECUTE_API_TOOL definitions.)
+if TOOL_SCHEMAS:
+    TOOL_SCHEMAS[-1] = {**TOOL_SCHEMAS[-1], "cache_control": {"type": "ephemeral"}}
+
 EXECUTOR_SYSTEM = """\
 You are the execution layer of a BIM personalization assistant. You replay a LEARNED Revit
 routine in the user's LIVE model using the tools. Work one step at a time.
@@ -417,21 +425,32 @@ def run_executor(
 
     emit = on_event or (lambda *_: None)
     system = EXECUTOR_SYSTEM + (memory_block or "")   # project memory steers the run
+    # Cache the system prompt too (it sits right after the cached tools); both are constant across
+    # a run's iterations, so iterations 2+ read the whole prefix from cache.
+    system_param = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     messages: list[dict] = [{"role": "user", "content": goal}]
     tool_calls: list[dict] = []
     attempts = 0
     api_reaffirmed = False     # has the agent reaffirmed an API-fallback escalation this turn?
+    usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
     for _ in range(max_iters):
         try:
             resp = client.messages.create(
-                model=model, max_tokens=1024, system=system,
+                model=model, max_tokens=1024, system=system_param,
                 tools=TOOL_SCHEMAS, messages=messages,
             )
         except Exception as exc:
             emit("error", str(exc))
             return {"done": False, "summary": f"Executor error: {exc}",
-                    "attempts": attempts, "tool_calls": tool_calls}
+                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage}
+
+        u = getattr(resp, "usage", None)
+        if u is not None:
+            usage["input"] += getattr(u, "input_tokens", 0) or 0
+            usage["output"] += getattr(u, "output_tokens", 0) or 0
+            usage["cache_read"] += getattr(u, "cache_read_input_tokens", 0) or 0
+            usage["cache_write"] += getattr(u, "cache_creation_input_tokens", 0) or 0
 
         blocks = _blocks(resp)
         text = _text_of(blocks)
@@ -445,7 +464,7 @@ def run_executor(
         if not tool_uses:
             emit("done", text)
             return {"done": True, "summary": text or "Routine complete.",
-                    "attempts": attempts, "tool_calls": tool_calls}
+                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage}
 
         results_content = []
         for tu in tool_uses:
@@ -483,7 +502,7 @@ def run_executor(
 
     emit("error", "iteration cap reached")
     return {"done": False, "summary": "Reached the step cap before finishing.",
-            "attempts": attempts, "tool_calls": tool_calls}
+            "attempts": attempts, "tool_calls": tool_calls, "usage": usage}
 
 
 def build_goal(motif: dict, location: dict | None = None) -> str:
