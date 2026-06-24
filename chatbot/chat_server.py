@@ -1683,6 +1683,55 @@ if __name__ == "__main__":
     if not args.no_browser:
         asyncio.get_event_loop().call_later(1.2, lambda: webbrowser.open(url))
 
+    # Auto-start + MONITOR the LiteLLM proxy when any agent runs on Gemini. The proxy translates the
+    # Anthropic Messages API → Gemini; if it's down the executor/chat fail with a cryptic
+    # "Connection error". Managed here (started on boot, restarted within 30s if it dies) so the user
+    # never has to babysit it. No-op when everything is on Claude (no proxy needed).
+    _gemini_in_use = any(llm.is_gemini(llm.pick(env, dflt)) for env, dflt in
+                         (("EXECUTOR_MODEL", "claude-sonnet-4-6"), ("CHATBOT_MODEL", "claude-sonnet-4-6"),
+                          ("PATTERN_AGENT_MODEL", "claude-opus-4-8"), ("MACRO_AGENT_MODEL", "claude-sonnet-4-6")))
+    if _gemini_in_use:
+        import subprocess as _sp, sysconfig as _sc, shutil as _shutil, urllib.request as _ulib, threading as _th
+
+        def _litellm_exe():
+            for c in (Path(_sc.get_path("scripts", os.name + "_user")) / "litellm.exe",
+                      Path(_shutil.which("litellm") or "nonexistent"),
+                      Path(_sc.get_path("scripts")) / "litellm.exe"):
+                if c.exists():
+                    return str(c)
+            return None
+
+        def _proxy_up():
+            try:
+                return _ulib.urlopen("http://127.0.0.1:4000/health/liveliness", timeout=2).status == 200
+            except Exception:
+                return False
+
+        def _ensure_proxy():
+            if _proxy_up():
+                return
+            exe = _litellm_exe()
+            if not exe:
+                print("Gemini is configured but litellm.exe was not found — install with "
+                      "`pip install --user \"litellm[proxy]\"`, or switch models off gemini.")
+                return
+            cfg = Path(__file__).resolve().parent.parent / "litellm_config.yaml"
+            _sp.Popen([exe, "--config", str(cfg), "--port", "4000"],
+                      stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                      env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+            print("LiteLLM proxy (Gemini) starting on :4000.")
+
+        _ensure_proxy()
+
+        def _proxy_monitor():
+            while True:
+                time.sleep(30)
+                try:
+                    _ensure_proxy()      # bring it back up if it died
+                except Exception:
+                    pass
+        _th.Thread(target=_proxy_monitor, daemon=True).start()
+
     # Auto-start the pattern watcher so detected routines appear in the assistant
     # automatically — recreates the retired revit_addin PatternBridge flow for the
     # generalBIMlog architecture. Disable with --no-watcher.
