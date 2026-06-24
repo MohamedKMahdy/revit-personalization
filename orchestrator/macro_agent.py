@@ -26,8 +26,9 @@ import anthropic
 
 from mcp_server.revit_bridge import model_query_state, model_query
 from shared.tool_allowlist import validate_tool_sequence
+from shared import llm
 
-MODEL = os.environ.get("MACRO_AGENT_MODEL", "claude-sonnet-4-6")
+MODEL = llm.pick("MACRO_AGENT_MODEL", "claude-sonnet-4-6")
 
 # ── mcp-servers-for-revit tool schema shown to the agent ──────────────────────
 # These are the stable tool names used in the ShortcutConfig.mcp_tool_sequence.
@@ -192,7 +193,7 @@ def generate_tool_sequence(
     Raises:
         ValueError if the backend returns invalid JSON or preconditions fail hard.
     """
-    client = anthropic.Anthropic()
+    client = llm.client(MODEL)
 
     # ── 1. Fetch model context for grounding ──────────────────────────────────
     context: dict = {}

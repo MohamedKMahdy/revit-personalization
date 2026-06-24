@@ -1,0 +1,28 @@
+# LiteLLM proxy — exposes an Anthropic Messages API (/v1/messages) that routes to Google Gemini,
+# so the project's `anthropic`-SDK code can use Gemini's free tier with NO code changes: the client
+# just points base_url at this proxy and selects model "gemini-flash" / "gemini-pro".
+# Claude (sonnet/opus/haiku) goes DIRECT to Anthropic and never touches this proxy.
+#
+# Setup (this machine has a corporate SSL proxy — see the env-reference memory):
+#   pip install --user "litellm[proxy]"
+#   PowerShell:  $env:GEMINI_API_KEY = "<your free Google AI Studio key>"
+#   litellm --config litellm_config.yaml --port 4000
+#
+# Then switch models with one env var (alias or full id):
+#   $env:LLM_MODEL_DEFAULT = "gemini"     # whole system on Gemini free tier
+#   $env:EXECUTOR_MODEL    = "gemini"     # just the executor
+#   $env:CHATBOT_MODEL     = "opus"       # just the chatbot back to Opus
+# Roles: EXECUTOR_MODEL, CHATBOT_MODEL, PATTERN_AGENT_MODEL, MACRO_AGENT_MODEL. See shared/llm.py.
+
+model_list:
+  - model_name: gemini-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+
+litellm_settings:
+  drop_params: true   # drop provider-unsupported params (e.g. a stray cache_control) instead of 400

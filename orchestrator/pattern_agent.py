@@ -14,7 +14,9 @@ import json
 import os
 import anthropic
 
-MODEL = os.environ.get("PATTERN_AGENT_MODEL", "claude-opus-4-8")
+from shared import llm  # noqa: E402
+
+MODEL = llm.pick("PATTERN_AGENT_MODEL", "claude-opus-4-8")
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """\
@@ -92,7 +94,7 @@ def extract_motif(examples: list[dict], routine_label: str = "") -> dict:
         Motif dict with keys: name, description, steps, preconditions,
         parameters_to_prompt — ready to pass to Motif(**result).
     """
-    client = anthropic.Anthropic()
+    client = llm.client(MODEL)
 
     # Slim down the action dicts — only send fields the agent needs
     KEEP_FIELDS = {
@@ -117,13 +119,15 @@ def extract_motif(examples: list[dict], routine_label: str = "") -> dict:
         "Return ONLY the JSON motif object."
     )
 
-    response = client.messages.create(
+    create_kwargs = dict(
         model=MODEL,
         max_tokens=16000,
-        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_message}],
     )
+    if llm.supports_thinking(MODEL):            # `thinking` is Claude-only — omit it for Gemini
+        create_kwargs["thinking"] = {"type": "adaptive"}
+    response = client.messages.create(**create_kwargs)
 
     # Extract the text block (skip thinking blocks)
     text = ""

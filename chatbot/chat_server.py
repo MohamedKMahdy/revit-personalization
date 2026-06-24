@@ -51,9 +51,11 @@ from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT  = int(os.environ.get("CHATBOT_PORT", "5000"))
-# Conversational chat replies — Sonnet 4.6 (~40% cheaper than Opus on these short confirm/execute
-# turns, still strong). Override with CHATBOT_MODEL. The pattern-detection agents keep Opus 4.8.
-MODEL = os.environ.get("CHATBOT_MODEL", "claude-sonnet-4-6")
+# Conversational chat model — Sonnet 4.6 by default (cheap, strong on short confirm/execute turns).
+# Switch with CHATBOT_MODEL (sonnet | opus | gemini …) or the global LLM_MODEL_DEFAULT. Gemini routes
+# through the local LiteLLM proxy; Claude goes direct. See shared/llm.py.
+from shared import llm  # noqa: E402
+MODEL = llm.pick("CHATBOT_MODEL", "claude-sonnet-4-6")
 
 # Where the detected-pattern history is persisted (survives server restarts).
 HISTORY_PATH = (Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
@@ -93,7 +95,7 @@ def _load_api_key() -> None:
 _load_api_key()
 
 app     = FastAPI(title="BIM Pattern Assistant")
-_client = anthropic.AsyncAnthropic()
+_client = llm.async_client(MODEL)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Pattern store

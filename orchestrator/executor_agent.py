@@ -31,8 +31,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from orchestrator import revit_tools
+from shared import llm
 
-EXECUTOR_MODEL = os.environ.get("EXECUTOR_MODEL", "claude-sonnet-4-6")
+EXECUTOR_MODEL = llm.pick("EXECUTOR_MODEL", "claude-sonnet-4-6")
 MAX_ITERS = int(os.environ.get("EXECUTOR_MAX_ITERS", "14"))
 
 # ── The tools the executor may use (Anthropic schema). This list IS the allowlist. ──
@@ -189,6 +190,11 @@ ALLOWED_TOOLS = {t["name"] for t in TOOL_SCHEMAS}
 # shared revit_tools/EXECUTE_API_TOOL definitions.)
 if TOOL_SCHEMAS:
     TOOL_SCHEMAS[-1] = {**TOOL_SCHEMAS[-1], "cache_control": {"type": "ephemeral"}}
+
+# Cache-free copy of the tool schemas for backends that don't support Anthropic prompt caching
+# (Gemini via the LiteLLM proxy) — sending cache_control there is at best ignored, at worst a 400.
+TOOL_SCHEMAS_PLAIN: list[dict] = [{k: v for k, v in t.items() if k != "cache_control"}
+                                 for t in TOOL_SCHEMAS]
 
 EXECUTOR_SYSTEM = """\
 You are the execution layer of a BIM personalization assistant. You replay a LEARNED Revit
@@ -419,15 +425,18 @@ def run_executor(
     `confirm_fn(name, args) -> bool` is consulted before dispatching a confirmation-gated tool
     (see needs_confirmation); returning False blocks the call with a 'user declined' result.
     """
+    model = llm.resolve(model)                       # alias (sonnet/opus/gemini) → concrete id
     if client is None:
-        import anthropic
-        client = anthropic.Anthropic()
+        client = llm.client(model)                   # direct to Anthropic, or via the Gemini proxy
 
     emit = on_event or (lambda *_: None)
     system = EXECUTOR_SYSTEM + (memory_block or "")   # project memory steers the run
-    # Cache the system prompt too (it sits right after the cached tools); both are constant across
-    # a run's iterations, so iterations 2+ read the whole prefix from cache.
-    system_param = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    # Cache the tools+system prefix on Claude (iterations 2+ read it at ~0.1x). Gemini can't cache,
+    # so send the plain string + cache-free tools there.
+    cache = llm.supports_prompt_caching(model)
+    system_param = ([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+                    if cache else system)
+    tools_param = TOOL_SCHEMAS if cache else TOOL_SCHEMAS_PLAIN
     messages: list[dict] = [{"role": "user", "content": goal}]
     tool_calls: list[dict] = []
     attempts = 0
@@ -438,7 +447,7 @@ def run_executor(
         try:
             resp = client.messages.create(
                 model=model, max_tokens=1024, system=system_param,
-                tools=TOOL_SCHEMAS, messages=messages,
+                tools=tools_param, messages=messages,
             )
         except Exception as exc:
             emit("error", str(exc))
