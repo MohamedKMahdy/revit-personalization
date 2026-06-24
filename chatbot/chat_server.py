@@ -120,6 +120,7 @@ def _lock_for(pid: str) -> asyncio.Lock:
 
 _TOKEN_RE = re.compile(
     r"##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##"
+    r"|##REMEMBER:[^#]*##"
 )
 
 
@@ -264,6 +265,11 @@ parameters if needed, then execute or dismiss based on their decision.
   as its own line, then a brief acknowledgment.
 - If the user wants to change a parameter (e.g. "change the mark to D-201"), acknowledge
   the change in your reply. The execution engine will apply it.
+- MEMORY: when the user tells you a DURABLE preference or fact about how they work — their
+  naming/Mark scheme, a default family, "always let me pick the location", "I'm an architect",
+  units, etc. (NOT one-off values for this run) — persist it by outputting a token on its own
+  line: ##REMEMBER:the concise fact## (it is stripped from your visible reply). Only for things
+  worth recalling next session; keep each fact short and high-signal.
 - Be friendly and concise. You are saving a BIM professional time.
 
 ━━━ POST-EXECUTION FOLLOW-UP ACTIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -284,9 +290,19 @@ routines here as soon as the detector finds one, and invite them to keep working
 Keep it to one or two sentences."""
 
 
+def _user_memory_prefix() -> str:
+    """The current user's persistent profile, prepended to every system prompt so the
+    assistant remembers who it's working with and their stated preferences."""
+    try:
+        block = pm.user_block(pm.load())
+    except Exception:
+        block = ""
+    return (block + "\n") if block else ""
+
+
 def _build_system(rec: dict | None) -> str:
     if not rec:
-        return _NO_PATTERN_SYSTEM
+        return _user_memory_prefix() + _NO_PATTERN_SYSTEM
 
     label = rec.get("label", "Unnamed Routine")
     count = rec.get("count", 0)
@@ -321,7 +337,8 @@ def _build_system(rec: dict | None) -> str:
     else:
         post_exec = ""
 
-    return _SYSTEM_TEMPLATE.format(summary=summary, steps=steps_str, post_exec_context=post_exec)
+    return _user_memory_prefix() + _SYSTEM_TEMPLATE.format(
+        summary=summary, steps=steps_str, post_exec_context=post_exec)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -360,6 +377,16 @@ async def _stream(rec: dict, user_text: str | None = None) -> AsyncIterator[str]
             return
 
         rec["history"].append({"role": "assistant", "content": full})
+
+        # Persist anything the assistant chose to remember about this user (##REMEMBER:fact##),
+        # so the per-user memory EVOLVES from conversation (OpenClaw-style auto-capture).
+        for fact in re.findall(r"##REMEMBER:([^#]+)##", full):
+            try:
+                mem = pm.load()
+                pm.add_preference(mem, fact.strip())
+                pm.save(mem)
+            except Exception:
+                pass
 
         # Parse optional location token: ##LOCATION:x,y,z##
         loc_match = re.search(r"##LOCATION:([-\d.]+),([-\d.]+),([-\d.]+)##", full)
@@ -927,7 +954,7 @@ function esc(s){
     .replace(/\n/g,'<br>');
 }
 function stripTokens(s){
-  return s.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##/g,'').trim();
+  return s.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##|##REMEMBER:[^#]*##/g,'').trim();
 }
 function withPid(body){ return Object.assign({pattern_id:_curId}, body||{}); }
 

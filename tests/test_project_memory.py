@@ -17,7 +17,10 @@ from orchestrator import project_memory as pm  # noqa: E402
 
 @pytest.fixture
 def mem_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "project_memory.json")
+    # Isolate per-user roots AND neutralize the legacy-import path so tests never read real memory.
+    monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
+    monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "users" / "test" / "memory.json")
+    monkeypatch.setattr(pm, "LEGACY_PATH", tmp_path / "nonexistent.json")
     return pm.MEM_PATH
 
 
@@ -68,6 +71,56 @@ def test_no_substitution_when_family_unchanged(mem_file):
     pm.learn_from_run(m, "r1", "Door", calls, done=True)
     assert m["routines"]["r1"]["family_substitutions"] == {}   # wanted == used → nothing learned
     assert m["routines"]["r1"]["executions"] == 1
+
+
+def test_memory_is_scoped_per_user(mem_file):
+    """Two users on the same machine get independent, persistent memory."""
+    alice = pm.load("alice")
+    pm.set_user(alice, name="Alice", role="architect")
+    pm.add_preference(alice, "always let me pick the location")
+    pm.learn_substitution(alice, "r1", "M_Single-Flush", "M_Door-Passage-Single-Flush", "Door")
+    pm.save(alice, "alice")
+
+    bob = pm.load("bob")
+    pm.add_preference(bob, "never auto-tag")
+    pm.save(bob, "bob")
+
+    a2 = pm.load("alice")
+    b2 = pm.load("bob")
+    assert a2["user"]["name_hint"] == "Alice" and a2["user"]["role_hint"] == "architect"
+    assert "always let me pick the location" in a2["user"]["preferences"]
+    assert a2["routines"]["r1"]["family_substitutions"]                       # alice's routine
+    assert b2["user"]["preferences"] == ["never auto-tag"]                    # bob's are separate
+    assert b2["routines"] == {} and "always let me pick the location" not in b2["user"]["preferences"]
+    assert (pm.MEM_ROOT / "alice" / "memory.json").exists()
+    assert (pm.MEM_ROOT / "bob" / "memory.json").exists()
+
+
+def test_user_block_renders_profile_and_is_empty_when_unknown(mem_file):
+    m = pm.load("u")
+    assert pm.user_block(m) == ""                                            # nothing known yet
+    pm.set_user(m, name="Mohamed", role="MSc student")
+    pm.add_preference(m, "keep answers committee-defensible")
+    pm.add_convention(m, "door Mark scheme", "D-1xx")
+    block = pm.user_block(m)
+    assert "Mohamed" in block and "MSc student" in block
+    assert "committee-defensible" in block and "D-1xx" in block
+    # the executor's full block embeds the user profile too
+    pm.learn_substitution(m, "r1", "A", "B", "Door")
+    full = pm.to_prompt(m, "r1")
+    assert "Mohamed" in full and "'A' -> 'B'" in full
+
+
+def test_legacy_global_store_migrates_once(mem_file, tmp_path, monkeypatch):
+    """An existing pre-per-user global store is imported on first load."""
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text('{"preferences":["pick location"],"routines":{"r9":{"label":"L","executions":2,'
+                      '"family_substitutions":{},"last_host_wall_id":null,"last_values":{}}}}',
+                      encoding="utf-8")
+    monkeypatch.setattr(pm, "LEGACY_PATH", legacy)
+    m = pm.load("fresh")                                       # no per-user file yet → import legacy
+    assert "pick location" in m["user"]["preferences"]          # old top-level prefs migrated to user
+    assert m["routines"]["r9"]["executions"] == 2
 
 
 def test_learn_caches_families_discovered_from_model(mem_file):

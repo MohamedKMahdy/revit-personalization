@@ -1,61 +1,158 @@
 """
-Project memory — the assistant's persistent understanding of the user's Revit project.
-The BIM analog of Claude Code's CLAUDE.md + memory files: a structured, human-readable
-store that is loaded into the executor's context each run AND written back to as the
-assistant learns, so understanding accumulates instead of being re-discovered every time.
+Per-user persistent memory — the assistant's evolving understanding of each user and their
+Revit project. The BIM analog of Claude Code's CLAUDE.md + memory files, with the per-user,
+self-evolving model OpenClaw popularised: a structured, human-readable store that is loaded
+into the agent's context each session AND written back to as the assistant learns, so
+understanding accumulates per user instead of being re-discovered every time.
 
-The highest-value thing it remembers is the self-healing executor's CORRECTIONS:
-  routine wanted M_Single-Flush → that family isn't loaded → executor used
-  M_Door-Passage-Single-Flush. Remember that substitution and go STRAIGHT to the right
-  family next time (no error, no re-discovery) — the system "knows the project".
+Why per-user (the thesis is about PERSONALIZATION): memory is scoped to a user id so two people
+on the same machine — or many participants in the study — each get their own evolving profile,
+preferences, and learned routine corrections. Identity resolution (best-effort, local):
+    REVIT_USER_ID env override  →  the OS account name  →  "default".
 
-Stored at %LOCALAPPDATA%\\RevitPersonalization\\project_memory.json (atomic writes).
+Design choices vs OpenClaw/Mem0 (honest, committee-defensible): we keep memory FILE-BASED and
+loaded into context (OpenClaw's USER.md/MEMORY.md model) rather than a vector-RAG layer (Mem0 /
+Letta). At single-user-per-install scale, context-loading the high-signal facts is simpler, fully
+inspectable, and dependency-free; the store stays swappable to a RAG backend if multi-tenant
+scale ever demands it.
+
+Stored at  %LOCALAPPDATA%\\RevitPersonalization\\users\\<user_id>\\memory.json  (atomic writes).
 Shape:
   {
-    "project":     {"name_hint": "", "notes": [], "loaded_families": {category: [names]}},
-    "routines":    { routine_id: { label, executions, family_substitutions:{wanted:used},
-                                   last_host_wall_id, last_values:{param:value}, notes:[] } },
-    "preferences": [ "free-text user preference", ... ]
+    "user":    {"id", "name_hint", "role_hint",
+                "preferences": [free-text], "conventions": {name: value}, "notes": [free-text]},
+    "project": {"name_hint", "notes": [], "loaded_families": {category: [names]}},
+    "routines":{ routine_id: { label, executions, family_substitutions:{wanted:used},
+                               last_host_wall_id, last_values:{param:value}, notes:[] } }
   }
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
+import re
 from pathlib import Path
 
-MEM_PATH = (Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-            / "RevitPersonalization" / "project_memory.json")
+_BASE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "RevitPersonalization"
+MEM_ROOT = _BASE / "users"
+LEGACY_PATH = _BASE / "project_memory.json"   # the old single global store (one-time import)
+
+
+def _sanitize(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", (name or "").strip()).strip("_.").lower()
+
+
+def current_user() -> str:
+    """Best-effort stable per-user id for this session."""
+    for cand in (os.environ.get("REVIT_USER_ID"), _safe_getuser()):
+        uid = _sanitize(cand or "")
+        if uid:
+            return uid
+    return "default"
+
+
+def _safe_getuser() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:
+        return ""
+
+
+def user_path(user_id: str | None = None) -> Path:
+    return MEM_ROOT / (_sanitize(user_id) if user_id else current_user()) / "memory.json"
+
+
+# Default path for the CURRENT user (tests monkeypatch this for isolation).
+MEM_PATH = user_path()
 
 
 def _empty() -> dict:
-    return {"project": {"name_hint": "", "notes": [], "loaded_families": {}},
-            "routines": {}, "preferences": []}
+    return {"user": {"id": "", "name_hint": "", "role_hint": "",
+                     "preferences": [], "conventions": {}, "notes": []},
+            "project": {"name_hint": "", "notes": [], "loaded_families": {}},
+            "routines": {}}
 
 
-def load() -> dict:
-    try:
-        mem = json.loads(MEM_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return _empty()
-    mem.setdefault("project", {}).setdefault("loaded_families", {})
-    mem["project"].setdefault("name_hint", "")
-    mem["project"].setdefault("notes", [])
+def _coerce(mem: dict) -> dict:
+    """Fill defaults + migrate the old top-level `preferences` into the user profile."""
+    u = mem.setdefault("user", {})
+    u.setdefault("id", "")
+    u.setdefault("name_hint", "")
+    u.setdefault("role_hint", "")
+    u.setdefault("preferences", [])
+    u.setdefault("conventions", {})
+    u.setdefault("notes", [])
+    if mem.get("preferences"):                       # migrate legacy global shape
+        for p in mem.pop("preferences"):
+            if p not in u["preferences"]:
+                u["preferences"].append(p)
+    p = mem.setdefault("project", {})
+    p.setdefault("name_hint", "")
+    p.setdefault("notes", [])
+    p.setdefault("loaded_families", {})
     mem.setdefault("routines", {})
-    mem.setdefault("preferences", [])
     return mem
 
 
-def save(mem: dict) -> None:
+def load(user_id: str | None = None) -> dict:
+    """Load a user's memory. First run imports the old global store once (migration)."""
+    path = user_path(user_id) if user_id else MEM_PATH
+    if path.exists():
+        try:
+            return _coerce(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            return _coerce(_empty())
+    if LEGACY_PATH.exists():                          # one-time migration of the pre-per-user store
+        try:
+            return _coerce(json.loads(LEGACY_PATH.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return _coerce(_empty())
+
+
+def save(mem: dict, user_id: str | None = None) -> None:
+    path = user_path(user_id) if user_id else MEM_PATH
     try:
-        MEM_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = MEM_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(mem, indent=2), encoding="utf-8")
-        tmp.replace(MEM_PATH)
+        mem.setdefault("user", {})["id"] = _sanitize(user_id) if user_id else current_user()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(mem, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
     except Exception:
         pass
 
 
+# ── User profile (the "remembers you" layer) ──────────────────────────────────────
+def set_user(mem: dict, *, name: str | None = None, role: str | None = None) -> None:
+    u = mem.setdefault("user", {})
+    if name:
+        u["name_hint"] = name.strip()
+    if role:
+        u["role_hint"] = role.strip()
+
+
+def add_preference(mem: dict, text: str) -> None:
+    text = (text or "").strip()
+    prefs = mem.setdefault("user", {}).setdefault("preferences", [])
+    if text and text not in prefs:
+        prefs.append(text)
+
+
+def add_convention(mem: dict, key: str, value: str) -> None:
+    key = (key or "").strip()
+    if key:
+        mem.setdefault("user", {}).setdefault("conventions", {})[key] = str(value)
+
+
+def note_about_user(mem: dict, text: str) -> None:
+    text = (text or "").strip()
+    notes = mem.setdefault("user", {}).setdefault("notes", [])
+    if text and text not in notes:
+        notes.append(text)
+
+
+# ── Routine / project memory ──────────────────────────────────────────────────────
 def routine_mem(mem: dict, routine_id: str, label: str = "") -> dict:
     r = mem["routines"].get(routine_id)
     if r is None:
@@ -83,21 +180,39 @@ def record_execution(mem: dict, routine_id: str, *, host_wall_id=None,
         r["last_values"].update({k: str(v) for k, v in values.items()})
 
 
-def add_preference(mem: dict, text: str) -> None:
-    text = (text or "").strip()
-    if text and text not in mem["preferences"]:
-        mem["preferences"].append(text)
-
-
 def remember_loaded_families(mem: dict, category: str, families: list[str]) -> None:
     if families:
         mem["project"]["loaded_families"][category] = sorted(set(families))
 
 
-def to_prompt(mem: dict, routine_id: str) -> str:
-    """Render what's known into a system-prompt block for the executor. Empty if nothing."""
+# ── Rendering into context ────────────────────────────────────────────────────────
+def user_block(mem: dict) -> str:
+    """The per-user profile rendered for a system prompt (used by the chat + executor)."""
+    u = mem.get("user") or {}
     lines: list[str] = []
-    r = mem["routines"].get(routine_id)
+    who = []
+    if u.get("name_hint"):
+        who.append(u["name_hint"])
+    if u.get("role_hint"):
+        who.append(f"({u['role_hint']})")
+    if who:
+        lines.append("User: " + " ".join(who))
+    if u.get("preferences"):
+        lines.append("Preferences: " + "; ".join(u["preferences"]))
+    if u.get("conventions"):
+        lines.append("Conventions: " + ", ".join(f"{k} = {v}" for k, v in u["conventions"].items()))
+    if u.get("notes"):
+        lines.append("Notes: " + "; ".join(u["notes"]))
+    if not lines:
+        return ""
+    return ("WHO YOU'RE WORKING WITH (persistent per-user memory — apply it, and respect the "
+            "user's stated preferences):\n- " + "\n- ".join(lines) + "\n")
+
+
+def to_prompt(mem: dict, routine_id: str) -> str:
+    """Full memory block for the executor: the user profile + what's known about this routine."""
+    lines: list[str] = []
+    r = mem.get("routines", {}).get(routine_id)
     if r:
         subs = r.get("family_substitutions") or {}
         if subs:
@@ -121,12 +236,12 @@ def to_prompt(mem: dict, routine_id: str) -> str:
             parts.append(f"{short}: " + ", ".join(fams[:8]) + (" …" if len(fams) > 8 else ""))
         lines.append("Families already known to be LOADED in this model (no need to re-query "
                      "get_available_family_types — place one of these): " + " | ".join(parts))
-    if mem.get("preferences"):
-        lines.append("User preferences: " + "; ".join(mem["preferences"]))
-    if not lines:
-        return ""
-    return ("\n\nWHAT YOU ALREADY KNOW ABOUT THIS PROJECT (memory — apply it before guessing):\n- "
-            + "\n- ".join(lines) + "\n")
+
+    block = user_block(mem)
+    if lines:
+        block += ("\n\nWHAT YOU ALREADY KNOW ABOUT THIS PROJECT (memory — apply it before guessing):\n- "
+                  + "\n- ".join(lines) + "\n")
+    return block
 
 
 def learn_from_run(mem: dict, routine_id: str, label: str, tool_calls: list[dict], done: bool) -> None:

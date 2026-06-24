@@ -268,10 +268,46 @@ def test_real_dispatch_routes_full_plugin_surface(monkeypatch):
 
 
 def test_real_dispatch_rejects_blocked_tool():
-    """send_code_to_revit is not exposed and never dispatches to the plugin."""
+    """send_code_to_revit is not exposed by name and never dispatches via the generic path."""
     assert "send_code_to_revit" not in ex.ALLOWED_TOOLS
     out = ex.real_dispatch("send_code_to_revit", {"code": "doc.Delete(x)"})
     assert out["success"] is False        # falls through to the unknown/disallowed branch
+
+
+def test_execute_revit_api_fallback(monkeypatch):
+    """The gated fallback compiles+runs C# via send_code_to_revit and normalizes the result."""
+    from mcp_server import revit_bridge as rb
+    captured = {}
+
+    def fake_call(command, params, timeout=None):
+        captured["command"] = command
+        captured["params"] = params
+        return {"success": True, "result": "[123,124]", "errorMessage": ""}   # ExecutionResultInfo
+
+    monkeypatch.setattr(rb, "_call_plugin", fake_call)
+    monkeypatch.setattr(ex, "API_FALLBACK_ENABLED", True)
+
+    out = ex.real_dispatch("execute_revit_api",
+                           {"purpose": "count walls", "code": "return new FilteredElementCollector(document).OfClass(typeof(Wall)).ToElementIds();",
+                            "transactionMode": "none"})
+    assert captured["command"] == "send_code_to_revit"
+    assert captured["params"]["transactionMode"] == "none"           # read-only honored
+    assert out["success"] is True and out["result"] == "[123,124]"
+
+
+def test_execute_revit_api_reports_failure(monkeypatch):
+    from mcp_server import revit_bridge as rb
+    monkeypatch.setattr(rb, "_call_plugin",
+                        lambda c, p, timeout=None: {"success": False, "result": None, "errorMessage": "CS0103: undefined"})
+    monkeypatch.setattr(ex, "API_FALLBACK_ENABLED", True)
+    out = ex.real_dispatch("execute_revit_api", {"purpose": "x", "code": "bad code"})
+    assert out["success"] is False and "CS0103" in out["message"]
+
+
+def test_execute_revit_api_disabled(monkeypatch):
+    monkeypatch.setattr(ex, "API_FALLBACK_ENABLED", False)
+    out = ex.real_dispatch("execute_revit_api", {"purpose": "x", "code": "return 1;"})
+    assert out["success"] is False and "disabled" in out["message"].lower()
 
 
 def test_events_streamed():

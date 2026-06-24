@@ -136,8 +136,50 @@ CURATED_SCHEMAS: list[dict] = [
     },
 ]
 
-# The full toolset the executor sees = curated ergonomic tools + the entire plugin surface.
-TOOL_SCHEMAS: list[dict] = CURATED_SCHEMAS + revit_tools.TOOL_SCHEMAS
+# ── Revit API fallback (gated) ────────────────────────────────────────────────────
+# When NO structured tool fits, the agent can drop down to the raw Revit API by writing a
+# small C# snippet that runs against the live Document (mcp-servers' send_code_to_revit).
+# This is the one capability that used to be hard-blocked; it is now available but GATED
+# (EXECUTOR_ALLOW_API_FALLBACK, default on) so it can be disabled for safe-mode demos, it is
+# transactional+undoable by default, and the generated code is streamed to the user for
+# oversight. It is a LAST RESORT, not the primary path.
+API_FALLBACK_ENABLED = os.environ.get("EXECUTOR_ALLOW_API_FALLBACK", "1").lower() not in ("0", "false", "no", "")
+
+EXECUTE_API_TOOL: dict = {
+    "name": "execute_revit_api",
+    "description": (
+        "LAST-RESORT fallback — run a small C# snippet against the live Revit API when NO "
+        "structured tool can do the step (a capability the backend doesn't expose as a tool). "
+        "Your code is the BODY of `object Execute(Document document, object[] parameters)`: "
+        "`document` is the active document; `return` a JSON-serializable value (ids, counts, "
+        "strings). In scope: Autodesk.Revit.DB, Autodesk.Revit.UI, System, System.Linq, "
+        "System.Collections.Generic. transactionMode 'auto' (default) wraps your code in ONE "
+        "undoable Revit Transaction that rolls back on error — use it for writes; use 'none' "
+        "for READ-ONLY queries (no transaction). RULES: try the structured tools FIRST; read "
+        "before you write; keep the snippet minimal and scoped to the goal; NEVER delete or "
+        "modify anything the goal did not ask for; always fill 'purpose'."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "purpose": {"type": "string",
+                        "description": "One line: what this code does and why no structured tool fit."},
+            "code": {"type": "string",
+                     "description": "C# body of Execute(Document document, object[] parameters); must return a value."},
+            "transactionMode": {"type": "string", "enum": ["auto", "none"],
+                                "description": "auto = wrap in one undoable Transaction (default, for writes); "
+                                               "none = read-only query (no transaction)."},
+        },
+        "required": ["purpose", "code"],
+    },
+}
+
+# The full toolset the executor sees = curated ergonomic tools + the entire plugin surface
+# (+ the gated Revit API fallback). send_code_to_revit is never exposed by name; the fallback
+# is the only sanctioned path to it, and only when enabled.
+TOOL_SCHEMAS: list[dict] = (
+    CURATED_SCHEMAS + revit_tools.TOOL_SCHEMAS + ([EXECUTE_API_TOOL] if API_FALLBACK_ENABLED else [])
+)
 ALLOWED_TOOLS = {t["name"] for t in TOOL_SCHEMAS}
 
 EXECUTOR_SYSTEM = """\
@@ -180,6 +222,15 @@ ai_element_filter). Prefer the simple curated tools for the common Place→SetPa
 reach for the advanced tools when the goal needs them or to gather context. All geometry is in
 MILLIMETRES. Tools marked DESTRUCTIVE (delete_element, operate_element, execute_transaction_group)
 change or remove existing work — use them only when the goal clearly asks for it.
+
+REVIT API FALLBACK (execute_revit_api) — your escape hatch when the backend has no tool for the
+step. If, after checking, NO structured tool can do what the goal needs, write a small C# snippet
+against the live Revit API instead of giving up. Discipline: (1) exhaust the structured tools
+first — the fallback is a last resort, not a shortcut; (2) for anything you're unsure about,
+query READ-ONLY first (transactionMode 'none') to learn the model, THEN write; (3) keep snippets
+minimal and scoped strictly to the goal; (4) writes run in one undoable transaction — never touch
+elements the goal didn't ask about; (5) say in 'purpose' what the code does. If the fallback is
+disabled you'll be told — then explain what you'd need instead.
 """
 
 
@@ -267,6 +318,26 @@ def real_dispatch(name: str, args: dict) -> dict:
             r = res.get("Response") or {}
             return {"success": True, "message": "picked", "location": {"x": r.get("x"), "y": r.get("y"), "z": r.get("z")}}
         return {"success": False, "message": _msg(res) or "pick cancelled"}
+
+    # Gated Revit API fallback — compile + run a C# snippet against the live Document via the
+    # plugin's send_code_to_revit. Transactional (auto) so a bad snippet rolls back + is undoable.
+    if name == "execute_revit_api":
+        if not API_FALLBACK_ENABLED:
+            return {"success": False, "message": "Revit API fallback is disabled "
+                                                 "(set EXECUTOR_ALLOW_API_FALLBACK=1 to enable)."}
+        code = (args.get("code") or "").strip()
+        if not code:
+            return {"success": False, "message": "no code provided"}
+        mode = "none" if str(args.get("transactionMode", "auto")).lower() == "none" else "auto"
+        res = rb._call_plugin("send_code_to_revit", {"code": code, "transactionMode": mode}, timeout=90)
+        if isinstance(res, dict):
+            if "error" in res:
+                return {"success": False, "message": str(res["error"])}
+            ok = bool(res.get("success"))
+            return {"success": ok,
+                    "message": ("executed" if ok else (res.get("errorMessage") or "code failed")),
+                    "result": res.get("result")}
+        return {"success": False, "message": "unexpected response from send_code_to_revit"}
 
     # Full plugin surface — every other exposed mcp-servers-for-revit command is dispatched
     # generically (its args ARE the plugin params). send_code_to_revit is not in this set.
