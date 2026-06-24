@@ -413,6 +413,52 @@ def test_required_steps_from_motif():
     ]
 
 
+def test_required_steps_and_goal_read_real_motif_fields():
+    """The Pattern Agent emits action_type / family_name / tag_family_name — not action / family_type."""
+    motif = {"name": "Place Window + Marks", "steps": [
+        {"action_type": "Place", "family_name": "M_Window-Fixed"},
+        {"action_type": "Tag", "tag_family_name": "M_Window Tag"},
+        {"action_type": "SetParam", "param_name": "Mark", "param_value": "1002"},
+        {"action_type": "SetParam", "param_name": "Comments", "param_value": "dds"},
+    ]}
+    assert ex.required_steps_from_motif(motif) == [
+        {"type": "place"}, {"type": "tag"},
+        {"type": "set_parameter", "name": "Mark", "value": "1002"},
+        {"type": "set_parameter", "name": "Comments", "value": "dds"},
+    ]
+    goal = ex.build_goal(motif)
+    assert "Place the family 'M_Window-Fixed'" in goal      # not the old "1. ?"
+    assert "M_Window Tag" in goal and "Mark" in goal and "1002" in goal
+
+
+def test_placed_element_id_from_any_placement_tool():
+    assert ex.placed_element_id(
+        [{"name": "place_and_configure", "args": {}, "result": {"success": True, "response": [888]}}]) == 888
+    assert ex.placed_element_id(
+        [{"name": "place_element", "args": {}, "result": {"success": True, "element_id": 12}}]) == 12
+    assert ex.placed_element_id([{"name": "inspect_model", "args": {}, "result": {"success": True}}]) is None
+
+
+def test_place_and_configure_counts_as_place_plus_params():
+    """The atomic place_and_configure places AND sets parameters — it satisfies both, so a routine
+    done that way is complete (not falsely reported unfinished)."""
+    script = [
+        Resp([_tu("place_and_configure", {"placements": [{"familyName": "M_Window-Fixed"}]}, "t1")]),
+        Resp([_tu("tag_element", {"element_id": 555}, "t2")]),
+        Resp([_txt("Done.")]),
+    ]
+
+    def fake_dispatch(name, args):
+        if name == "place_and_configure":
+            return {"success": True, "response": [555]}
+        return {"success": True}
+
+    required = [{"type": "place"}, {"type": "set_parameter", "name": "Mark", "value": "1002"}, {"type": "tag"}]
+    out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch, required=required)
+    assert out["done"] is True                              # place+params via the atomic tool, then tagged
+    assert ex.placed_element_id(out["tool_calls"]) == 555   # id pulled from the generic 'response'
+
+
 def test_completion_reprompt_when_model_stops_after_place():
     """Model places then declares done; enforcement re-prompts and the model finishes the routine."""
     script = [

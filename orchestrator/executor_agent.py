@@ -414,17 +414,27 @@ API_NUDGE = (
 MAX_COMPLETION_NUDGES = 2
 
 
+# Any tool that PLACES an element / SETS a parameter / TAGS — the agent has several ways to do each
+# (e.g. place_and_configure both places AND sets parameters in one atomic call), so completion can't
+# key off place_element/set_parameter/tag_element alone.
+PLACE_TOOLS = {"place_element", "place_and_configure", "create_point_based_element",
+               "create_line_based_element", "create_surface_based_element", "duplicate_element"}
+SETPARAM_TOOLS = {"set_parameter", "set_element_parameter"}
+TAG_TOOLS = {"tag_element", "tag_walls", "tag_rooms"}
+
+
 def required_steps_from_motif(motif: dict) -> list[dict]:
-    """The must-happen steps of a routine, for completion enforcement: place / set_parameter / tag."""
+    """The must-happen steps of a routine, for completion enforcement: place / set_parameter / tag.
+    Reads the Pattern Agent's actual fields (action_type, family_name, …) with legacy fallbacks."""
     steps = motif.get("steps", []) if isinstance(motif, dict) else []
     out: list[dict] = []
     for s in steps:
-        a = (s.get("action") or "").lower()
+        a = (s.get("action_type") or s.get("action") or "").lower()
         if "place" in a or "create" in a:
             out.append({"type": "place"})
         elif "tag" in a:
             out.append({"type": "tag"})
-        elif s.get("param_name") or "param" in a:
+        elif "param" in a or s.get("param_name"):
             out.append({"type": "set_parameter", "name": s.get("param_name"), "value": s.get("param_value")})
     return out
 
@@ -433,10 +443,37 @@ def _ok_calls(tool_calls: list[dict]) -> list[dict]:
     return [c for c in tool_calls if (c.get("result") or {}).get("success")]
 
 
-def _last_placed_id(tool_calls: list[dict]):
+def _result_element_id(result: dict):
+    """Pull a created element id from any placement result — curated (element_id) or generic (response)."""
+    if not isinstance(result, dict):
+        return None
+    for k in ("element_id", "elementId"):
+        if result.get(k) is not None:
+            try:
+                return int(result[k])
+            except (TypeError, ValueError):
+                pass
+    resp = result.get("response")
+    if isinstance(resp, list) and resp:
+        try:
+            return int(resp[0])
+        except (TypeError, ValueError):
+            pass
+    if isinstance(resp, (int, str)):
+        try:
+            return int(resp)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def placed_element_id(tool_calls: list[dict]):
+    """The id of the most-recently placed element, from ANY placement tool."""
     for c in reversed(tool_calls):
-        if c.get("name") == "place_element" and (c.get("result") or {}).get("success"):
-            return (c.get("result") or {}).get("element_id")
+        if c.get("name") in PLACE_TOOLS and (c.get("result") or {}).get("success"):
+            eid = _result_element_id(c.get("result") or {})
+            if eid is not None:
+                return eid
     return None
 
 
@@ -445,15 +482,16 @@ def _incomplete_steps(required: list[dict] | None, tool_calls: list[dict]) -> li
     if not required:
         return []
     ok = _ok_calls(tool_calls)
-    placed = any(c["name"] == "place_element" for c in ok)
-    set_names = {(c["args"].get("name") or "").lower() for c in ok if c["name"] == "set_parameter"}
-    tagged = any(c["name"] == "tag_element" for c in ok)
+    placed = any(c["name"] in PLACE_TOOLS for c in ok)
+    configured = any(c["name"] == "place_and_configure" for c in ok)   # places AND sets params
+    set_names = {(c["args"].get("name") or "").lower() for c in ok if c["name"] in SETPARAM_TOOLS}
+    tagged = any(c["name"] in TAG_TOOLS for c in ok)
     missing = []
     for step in required:
         t = step.get("type")
         if t == "place" and not placed:
             missing.append(step)
-        elif t == "set_parameter" and (step.get("name") or "").lower() not in set_names:
+        elif t == "set_parameter" and not configured and (step.get("name") or "").lower() not in set_names:
             missing.append(step)
         elif t == "tag" and not tagged:
             missing.append(step)
@@ -546,7 +584,7 @@ def run_executor(
         if not tool_uses:
             missing = _incomplete_steps(required, tool_calls)
             if missing:
-                placed_id = _last_placed_id(tool_calls)
+                placed_id = placed_element_id(tool_calls)
                 if completion_nudges < MAX_COMPLETION_NUDGES:
                     # The model stopped with routine steps unfinished — push it to complete them.
                     completion_nudges += 1
@@ -558,6 +596,8 @@ def run_executor(
                 if placed_id:
                     for s in missing:
                         if s["type"] == "set_parameter":
+                            if s.get("value") in (None, ""):
+                                continue   # a variable/runtime param — value unknown, leave it to the user
                             args = {"element_id": placed_id, "name": s.get("name"), "value": s.get("value")}
                             tool = "set_parameter"
                         elif s["type"] == "tag":
@@ -617,26 +657,37 @@ def run_executor(
 
 
 def build_goal(motif: dict, location: dict | None = None) -> str:
-    """Turn a detected routine (motif + steps) into the executor's goal prompt."""
+    """Turn a detected routine (motif + steps) into the executor's goal prompt. Reads the Pattern
+    Agent's real step fields (action_type, family_name, tag_family_name, param_name/value)."""
     steps = motif.get("steps", []) if isinstance(motif, dict) else []
-    lines = [f"Routine: {motif.get('name', 'Detected routine')}", "Steps to reproduce:"]
+    lines = [f"Routine: {motif.get('name', 'Detected routine')}", "Steps to reproduce IN ORDER:"]
     for i, s in enumerate(steps, 1):
-        action = s.get("action", "?")
-        ft = s.get("family_type", "")
-        pn = s.get("param_name", "")
-        pv = s.get("param_value", "")
-        if ft:
-            lines.append(f"  {i}. {action}: {ft}")
+        a = (s.get("action_type") or s.get("action") or "").strip()
+        al = a.lower()
+        fam = s.get("family_name") or s.get("family_type") or ""
+        pn = s.get("param_name") or ""
+        pv = s.get("param_value")
+        tagfam = s.get("tag_family_name") or ""
+        if ("place" in al or "create" in al) and fam:
+            lines.append(f"  {i}. Place the family '{fam}'.")
+        elif "tag" in al:
+            lines.append(f"  {i}. Tag the placed element" + (f" with '{tagfam}'." if tagfam else "."))
         elif pn:
-            lines.append(f"  {i}. {action}: {pn} = {pv}")
-        else:
-            lines.append(f"  {i}. {action}")
+            if pv in (None, ""):
+                lines.append(f"  {i}. Set parameter '{pn}' on the placed element "
+                             "(value is provided at runtime — ask the user if you don't have it).")
+            else:
+                lines.append(f"  {i}. Set parameter '{pn}' = '{pv}' on the placed element.")
+        elif a:
+            lines.append(f"  {i}. {a}.")
     if location:
-        lines.append(f"Place it at approximately x={location.get('x')}, y={location.get('y')} (mm). "
-                     f"If it needs a host wall and none is there, ask the user to pick a point on a wall.")
+        lines.append(f"Place it at approximately x={location.get('x')}, y={location.get('y')} mm. "
+                     "If it needs a host wall and none is there, ask the user to pick a point on a wall.")
     else:
-        lines.append("No location given yet — use pick_point to have the user click where to place it.")
-    lines.append("Reproduce the routine now, self-correcting on any tool error.")
+        lines.append("No location given yet — if the user has a wall selected, host on it; otherwise use "
+                     "pick_point to have the user click where to place it (on a wall for a door/window).")
+    lines.append("Do EVERY step in order — place, set each parameter, and tag — self-correcting on any "
+                 "tool error. Do not stop after placing; the routine is only done when all steps succeeded.")
     return "\n".join(lines)
 
 

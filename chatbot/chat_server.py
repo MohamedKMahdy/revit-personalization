@@ -46,7 +46,8 @@ from pydantic import BaseModel
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
-from orchestrator.executor_agent import run_executor, build_goal, required_steps_from_motif
+from orchestrator.executor_agent import (run_executor, build_goal, required_steps_from_motif,
+                                          placed_element_id)
 from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -809,10 +810,9 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
                     yield ": ping\n\n"        # the executor blocks on a confirmation
                 continue
         result = await task
-        for c in result.get("tool_calls", []):
-            if (c["name"] == "place_element" and c["result"].get("success")
-                    and c["result"].get("element_id")):
-                rec["last_element_id"] = int(c["result"]["element_id"])
+        eid = placed_element_id(result.get("tool_calls", []))   # any placement tool, not just place_element
+        if eid is not None:
+            rec["last_element_id"] = eid
         if result.get("done"):
             rec["status"] = "executed"
         _save_history()
