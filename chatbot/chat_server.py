@@ -523,9 +523,10 @@ async def api_set_pattern(payload: PatternIn):
         existing["tool_sequence"] = payload.tool_sequence
         existing["examples"]      = payload.examples
         existing["detected_at"]   = now
-        # A routine the user DISMISSED that keeps recurring is worth re-alerting:
-        # re-badge it as new so it re-surfaces instead of staying silenced forever.
-        if existing.get("status") == "dismissed" and payload.count > prev_count:
+        # A routine whose repetitions keep growing is worth re-surfacing — re-badge it 'new' so the
+        # sidebar flags it (covers seen/executed/dismissed). The active-pattern guard below still
+        # keeps the user where they are if they're mid-conversation.
+        if payload.count > prev_count and existing.get("status") != "new":
             existing["status"] = "new"
         rec, is_new = existing, False
     else:
@@ -1687,6 +1688,17 @@ if __name__ == "__main__":
     # generalBIMlog architecture. Disable with --no-watcher.
     if not args.no_watcher:
         import subprocess, atexit
+        # Kill any stale watcher first — a force-killed server orphans its child (atexit doesn't run),
+        # so without this, restarts accumulate watchers all polling the same state file. Best-effort.
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                 "Where-Object { $_.CommandLine -match 'pattern_watcher' } | "
+                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+                timeout=15, capture_output=True)
+        except Exception:
+            pass
         try:
             _watcher = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve().parent.parent / "pattern_watcher.py")],

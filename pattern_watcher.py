@@ -33,9 +33,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp_server.log_reader import list_candidate_routines, get_routine_examples
-from orchestrator.pattern_agent import extract_motif
+from orchestrator.pattern_agent import extract_motif, MODEL as PATTERN_MODEL
 from orchestrator.macro_agent import generate_tool_sequence
 from chatbot.trigger import notify_pattern
+from shared import llm
 
 STATE_PATH = (Path.home() / "AppData" / "Local" / "RevitPersonalization"
               / "pattern_watcher_state.json")
@@ -53,34 +54,50 @@ def _load_api_key() -> None:
                 return
 
 
-def _load_notified() -> set[str]:
+# Re-announce a KNOWN routine once its repetitions have grown by this much since we last announced
+# it — so repeating a routine you've already seen still gives you feedback (set 0 to never re-notify,
+# 1 to re-notify on any new repetition). Override with WATCHER_RENOTIFY_GROWTH.
+RENOTIFY_GROWTH = int(os.environ.get("WATCHER_RENOTIFY_GROWTH", "3"))
+
+
+def _load_state() -> dict:
+    """{routine_id: support_at_last_announce}. Migrates the legacy list-of-ids format (treated as
+    support 0, so existing routines re-announce once)."""
     try:
-        return set(json.loads(STATE_PATH.read_text(encoding="utf-8")))
+        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return {str(i): 0 for i in data}
+        return {str(k): int(v) for k, v in data.items()}
     except Exception:
-        return set()
+        return {}
 
 
-def _save_notified(ids: set[str]) -> None:
+def _save_state(state: dict) -> None:
     try:
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = STATE_PATH.with_suffix(".tmp")
-        tmp.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+        tmp.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
         tmp.replace(STATE_PATH)  # atomic — avoids a torn read-modify-write
     except Exception as exc:
         print(f"[watcher] could not save state: {exc}", file=sys.stderr)
 
 
 def scan_once(min_support: int, dry_run: bool) -> int:
-    """One detect → generate → notify pass. Returns the number newly announced."""
-    notified = _load_notified()
+    """One detect → generate → notify pass. Returns the number announced (new or grown)."""
+    state = _load_state()
     routines = [r for r in list_candidate_routines(include_synthetic=False)
                 if r.support >= min_support]
-    fresh = [r for r in routines if r.id not in notified]
-    print(f"[watcher] {len(routines)} routine(s) >= support {min_support}; {len(fresh)} new")
+    # Announce a routine that is NEW, or whose support has grown by >= RENOTIFY_GROWTH since we
+    # last announced it (the user keeps doing it → re-surface it).
+    fresh = [r for r in routines
+             if r.id not in state
+             or (RENOTIFY_GROWTH and (r.support - state.get(r.id, 0)) >= RENOTIFY_GROWTH)]
+    print(f"[watcher] {len(routines)} routine(s) >= support {min_support}; {len(fresh)} to announce")
 
     announced = 0
     for r in fresh:
-        print(f"[watcher] new routine: {r.label}  (support {r.support})")
+        kind = "new routine" if r.id not in state else f"grew (+{r.support - state.get(r.id, 0)})"
+        print(f"[watcher] {kind}: {r.label}  (support {r.support})")
         try:
             full = get_routine_examples(r.id, k=5)
             examples = [ex.model_dump() for ex in full.examples]
@@ -106,8 +123,8 @@ def scan_once(min_support: int, dry_run: bool) -> int:
             print(f"[watcher]   notify failed, will retry next scan: {exc}", file=sys.stderr)
             continue
 
-        notified.add(r.id)
-        _save_notified(notified)
+        state[r.id] = r.support
+        _save_state(state)
         announced += 1
     return announced
 
@@ -136,7 +153,9 @@ def main() -> int:
     args = ap.parse_args()
 
     _load_api_key()
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    # The Pattern/Macro agents may run on Gemini (via the LiteLLM proxy) — only require an Anthropic
+    # key when they're actually on a Claude model.
+    if not llm.is_gemini(PATTERN_MODEL) and not os.environ.get("ANTHROPIC_API_KEY"):
         print("ERROR: ANTHROPIC_API_KEY not set (and not found in .env).", file=sys.stderr)
         return 1
 
