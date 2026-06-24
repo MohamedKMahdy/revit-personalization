@@ -831,9 +831,6 @@ body{font-family:var(--font);
 .sb-badge{position:absolute;top:-5px;right:-5px;background:var(--tum-orange);color:#fff;
           font-size:10px;font-weight:700;min-width:16px;height:16px;border-radius:8px;
           display:none;align-items:center;justify-content:center;padding:0 4px}
-/* TUM wordmark lockup */
-.tum-logo{height:26px;width:auto;flex-shrink:0;display:block}
-.hdr-divider{width:1px;height:30px;background:rgba(255,255,255,.45);flex-shrink:0}
 .hdr-text{min-width:0}
 .hdr-text h1{font-size:15px;font-weight:600;letter-spacing:.01em;
              white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -905,12 +902,6 @@ body{font-family:var(--font);
 <div class="main">
   <div class="hdr">
     <button class="sb-toggle" id="sb-toggle" onclick="toggleSidebar()">☰<span class="sb-badge" id="sb-badge"></span></button>
-    <svg class="tum-logo" viewBox="0 0 132 40" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TUM — Technical University of Munich" fill="#fff">
-      <rect x="0" y="0" width="34" height="8.5"/><rect x="12.75" y="0" width="8.5" height="40"/>
-      <rect x="44" y="0" width="8.5" height="40"/><rect x="69.5" y="0" width="8.5" height="40"/><rect x="44" y="31.5" width="34" height="8.5"/>
-      <polygon points="88,40 88,0 96.5,0 110,26 123.5,0 132,0 132,40 123.5,40 123.5,17 114,35 106,35 96.5,17 96.5,40"/>
-    </svg>
-    <div class="hdr-divider"></div>
     <div class="hdr-text">
       <h1 id="p-label">BIM Personalization Assistant</h1>
       <p id="p-meta">Technische Universität München · loading…</p>
