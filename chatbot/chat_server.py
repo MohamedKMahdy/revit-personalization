@@ -51,7 +51,9 @@ from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
 PORT  = int(os.environ.get("CHATBOT_PORT", "5000"))
-MODEL = "claude-opus-4-8"
+# Conversational chat replies — Sonnet 4.6 (~40% cheaper than Opus on these short confirm/execute
+# turns, still strong). Override with CHATBOT_MODEL. The pattern-detection agents keep Opus 4.8.
+MODEL = os.environ.get("CHATBOT_MODEL", "claude-sonnet-4-6")
 
 # Where the detected-pattern history is persisted (survives server restarts).
 HISTORY_PATH = (Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
