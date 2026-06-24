@@ -400,6 +400,80 @@ def test_api_nudge_rearms_after_a_structured_tool():
     assert out["tool_calls"][2]["result"]["success"] is False    # nudged again after the re-arm
 
 
+def test_required_steps_from_motif():
+    motif = {"steps": [
+        {"action": "Place", "family_type": "M_Single-Flush"},
+        {"action": "SetParam", "param_name": "Mark", "param_value": "D-101"},
+        {"action": "Tag"},
+    ]}
+    assert ex.required_steps_from_motif(motif) == [
+        {"type": "place"},
+        {"type": "set_parameter", "name": "Mark", "value": "D-101"},
+        {"type": "tag"},
+    ]
+
+
+def test_completion_reprompt_when_model_stops_after_place():
+    """Model places then declares done; enforcement re-prompts and the model finishes the routine."""
+    script = [
+        Resp([_tu("place_element", {"family_name": "M_Door", "location": {"x": 0, "y": 0}}, "t1")]),
+        Resp([_txt("Placed the door.")]),                                   # stops early → nudged
+        Resp([_tu("set_parameter", {"element_id": 999, "name": "Mark", "value": "D-101"}, "t2")]),
+        Resp([_tu("tag_element", {"element_id": 999}, "t3")]),
+        Resp([_txt("All done.")]),
+    ]
+
+    def fake_dispatch(name, args):
+        if name == "place_element":
+            return {"success": True, "element_id": 999}
+        return {"success": True}
+
+    required = [{"type": "place"}, {"type": "set_parameter", "name": "Mark", "value": "D-101"}, {"type": "tag"}]
+    out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch, required=required)
+    assert out["done"] is True
+    names = [c["name"] for c in out["tool_calls"]]
+    assert names == ["place_element", "set_parameter", "tag_element"]
+
+
+def test_completion_deterministic_finish_when_model_wont():
+    """Model places then keeps stopping (e.g. Gemini Flash). After the nudge cap, the executor
+    completes the known set_parameter + tag itself so the routine doesn't end half-done."""
+    script = [
+        Resp([_tu("place_element", {"family_name": "M_Window", "location": {"x": 0, "y": 0}}, "t1")]),
+        Resp([_txt("Window placed.")]),     # nudge 1
+        Resp([_txt("It is placed.")]),      # nudge 2
+        Resp([_txt("Placed it.")]),         # cap reached → deterministic finish
+    ]
+    dispatched = []
+
+    def fake_dispatch(name, args):
+        dispatched.append((name, args))
+        if name == "place_element":
+            return {"success": True, "element_id": 777}
+        return {"success": True}
+
+    required = [{"type": "place"}, {"type": "set_parameter", "name": "Mark", "value": "W-1"}, {"type": "tag"}]
+    out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch, required=required)
+
+    assert out["done"] is True                                  # routine completed despite the model
+    names = [c["name"] for c in out["tool_calls"]]
+    assert names == ["place_element", "set_parameter", "tag_element"]
+    setp = next(c for c in out["tool_calls"] if c["name"] == "set_parameter")
+    assert setp["args"] == {"element_id": 777, "name": "Mark", "value": "W-1"}   # known step, deterministic
+    assert ("tag_element", {"element_id": 777}) in dispatched
+
+
+def test_no_required_means_legacy_done():
+    """Without a required spec, stopping after one tool is 'done' (unchanged behavior)."""
+    script = [
+        Resp([_tu("place_element", {"family_name": "M_Door", "location": {"x": 0, "y": 0}}, "t1")]),
+        Resp([_txt("Placed.")]),
+    ]
+    out = ex.run_executor("goal", client=FakeClient(script),
+                          dispatch_fn=lambda n, a: {"success": True, "element_id": 1})
+    assert out["done"] is True and [c["name"] for c in out["tool_calls"]] == ["place_element"]
+
+
 def test_events_streamed():
     """on_event must emit reasoning / tool / result / done so the chat can stream it."""
     script = [

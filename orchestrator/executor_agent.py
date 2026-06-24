@@ -227,9 +227,12 @@ YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
   fallback; that tool is only for operations no structured tool supports (see below).
 - After 3 failed attempts on the SAME step, stop and explain what you tried and why you're stuck.
 
-Apply the routine's parameters and tag once the element is placed. When the routine is fully
-done (placed + parameters set + tagged), reply with a SHORT plain-text summary and DO NOT call
-any more tools. Be concise; the user is watching your steps.
+FINISH THE WHOLE ROUTINE — a placement ALONE is never "done". After you place the element you MUST
+continue: set EVERY parameter the routine lists (set_parameter on the placed element's id) and tag
+it if the routine tags. Do not end your turn, and do not write a summary, until every step has a
+SUCCESSFUL tool result. If you just placed something and haven't set its parameters or tagged it,
+your next action is a tool call, not a stopping point. Only when placed + all parameters set + tagged
+do you reply with a SHORT plain-text summary and stop. Be concise; the user is watching your steps.
 
 YOU HAVE THE FULL REVIT BACKEND, not just place/set/tag. Beyond the curated tools you can also
 create walls, floors, grids, levels, rooms, structural framing and dimensions; color/override,
@@ -404,6 +407,74 @@ API_NUDGE = (
 )
 
 
+# Completion enforcement — the routine isn't "done" just because the model stopped calling tools.
+# A weaker model (e.g. Gemini Flash) tends to place the element and then declare success without
+# setting parameters or tagging. We compute the routine's required steps, and if the model stops
+# early we re-prompt it to finish; if it STILL won't, we complete the known steps deterministically.
+MAX_COMPLETION_NUDGES = 2
+
+
+def required_steps_from_motif(motif: dict) -> list[dict]:
+    """The must-happen steps of a routine, for completion enforcement: place / set_parameter / tag."""
+    steps = motif.get("steps", []) if isinstance(motif, dict) else []
+    out: list[dict] = []
+    for s in steps:
+        a = (s.get("action") or "").lower()
+        if "place" in a or "create" in a:
+            out.append({"type": "place"})
+        elif "tag" in a:
+            out.append({"type": "tag"})
+        elif s.get("param_name") or "param" in a:
+            out.append({"type": "set_parameter", "name": s.get("param_name"), "value": s.get("param_value")})
+    return out
+
+
+def _ok_calls(tool_calls: list[dict]) -> list[dict]:
+    return [c for c in tool_calls if (c.get("result") or {}).get("success")]
+
+
+def _last_placed_id(tool_calls: list[dict]):
+    for c in reversed(tool_calls):
+        if c.get("name") == "place_element" and (c.get("result") or {}).get("success"):
+            return (c.get("result") or {}).get("element_id")
+    return None
+
+
+def _incomplete_steps(required: list[dict] | None, tool_calls: list[dict]) -> list[dict]:
+    """Required steps with no matching successful tool call yet. Empty when complete / unconstrained."""
+    if not required:
+        return []
+    ok = _ok_calls(tool_calls)
+    placed = any(c["name"] == "place_element" for c in ok)
+    set_names = {(c["args"].get("name") or "").lower() for c in ok if c["name"] == "set_parameter"}
+    tagged = any(c["name"] == "tag_element" for c in ok)
+    missing = []
+    for step in required:
+        t = step.get("type")
+        if t == "place" and not placed:
+            missing.append(step)
+        elif t == "set_parameter" and (step.get("name") or "").lower() not in set_names:
+            missing.append(step)
+        elif t == "tag" and not tagged:
+            missing.append(step)
+    return missing
+
+
+def _completion_nudge(missing: list[dict], placed_id) -> str:
+    parts = []
+    for s in missing:
+        if s["type"] == "set_parameter":
+            parts.append(f"set parameter '{s.get('name')}' = '{s.get('value')}'")
+        elif s["type"] == "tag":
+            parts.append("tag the element")
+        elif s["type"] == "place":
+            parts.append("place the element")
+    el = f" (the placed element id is {placed_id})" if placed_id else ""
+    return ("The routine is NOT finished yet" + el + ". You still need to: " + "; ".join(parts)
+            + ". Do it now with the tools — a placement alone is never done; do not stop until every "
+              "step has a successful tool result.")
+
+
 def run_executor(
     goal: str,
     *,
@@ -412,6 +483,7 @@ def run_executor(
     on_event: Callable[[str, Any], None] | None = None,
     confirm_fn: Callable[[str, dict], bool] | None = None,
     guard_api_fallback: bool = True,
+    required: list[dict] | None = None,
     max_iters: int = MAX_ITERS,
     model: str = EXECUTOR_MODEL,
     memory_block: str = "",
@@ -441,6 +513,7 @@ def run_executor(
     tool_calls: list[dict] = []
     attempts = 0
     api_reaffirmed = False     # has the agent reaffirmed an API-fallback escalation this turn?
+    completion_nudges = 0      # times we've re-prompted the model to finish unfinished routine steps
     usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
     for _ in range(max_iters):
@@ -471,8 +544,37 @@ def run_executor(
         messages.append({"role": "assistant", "content": blocks})
 
         if not tool_uses:
+            missing = _incomplete_steps(required, tool_calls)
+            if missing:
+                placed_id = _last_placed_id(tool_calls)
+                if completion_nudges < MAX_COMPLETION_NUDGES:
+                    # The model stopped with routine steps unfinished — push it to complete them.
+                    completion_nudges += 1
+                    emit("reasoning", "Routine not finished — continuing the remaining steps.")
+                    messages.append({"role": "user", "content": _completion_nudge(missing, placed_id)})
+                    continue
+                # The model won't finish (e.g. a weaker model). Complete the KNOWN steps ourselves on
+                # the placed element so the routine doesn't end half-done.
+                if placed_id:
+                    for s in missing:
+                        if s["type"] == "set_parameter":
+                            args = {"element_id": placed_id, "name": s.get("name"), "value": s.get("value")}
+                            tool = "set_parameter"
+                        elif s["type"] == "tag":
+                            args, tool = {"element_id": placed_id}, "tag_element"
+                        else:
+                            continue
+                        emit("tool", {"name": tool, "args": args})
+                        try:
+                            r = dispatch_fn(tool, args)
+                        except Exception as exc:
+                            r = {"success": False, "message": f"dispatch raised: {exc}"}
+                        emit("result", {"name": tool, "result": r})
+                        tool_calls.append({"name": tool, "args": args, "result": r})
+                    missing = _incomplete_steps(required, tool_calls)
+            done = not missing
             emit("done", text)
-            return {"done": True, "summary": text or "Routine complete.",
+            return {"done": done, "summary": text or "Routine complete.",
                     "attempts": attempts, "tool_calls": tool_calls, "usage": usage}
 
         results_content = []

@@ -46,7 +46,7 @@ from pydantic import BaseModel
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
-from orchestrator.executor_agent import run_executor, build_goal
+from orchestrator.executor_agent import run_executor, build_goal, required_steps_from_motif
 from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -795,7 +795,8 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
                    "payload": "Using what I remember about this project."}) + "\n\n")
         task = asyncio.create_task(asyncio.to_thread(
             run_executor, build_goal(motif, location),
-            on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block))
+            on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block,
+            required=required_steps_from_motif(motif)))
         idle = 0
         while not (task.done() and queue.empty()):
             try:
