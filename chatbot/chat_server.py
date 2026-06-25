@@ -838,6 +838,10 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         try:
             mem = pm.load()
             pm.learn_from_run(mem, routine_id, label, result.get("tool_calls", []), result.get("done", False))
+            # Learn from the MISTAKES too (not just successes): derive corrections from this run's
+            # trace so the executor doesn't repeat the same opening failures next run.
+            pm.learn_corrections(mem, routine_id, label, result.get("tool_calls", []),
+                                 nudged=result.get("nudged", 0))
             pm.save(mem)
         except Exception:
             pass

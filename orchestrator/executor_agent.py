@@ -227,6 +227,11 @@ YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
   and fix the call. NEVER respond to a place/set/tag/create failure by switching to the Revit API
   fallback; that tool is only for operations no structured tool supports (see below).
 - After 3 failed attempts on the SAME step, stop and explain what you tried and why you're stuck.
+- If the memory block below contains a "WHAT WENT WRONG BEFORE ON THIS ROUTINE" section, treat it as
+  authoritative: those are mistakes you actually made on prior runs. Apply each fix on your FIRST
+  action — do NOT repeat the failed approach just to rediscover it. E.g. if it says this family is
+  wall-hosted, get a host wall id (get_selected_elements / pick_point) and use place_and_configure
+  with it BEFORE any bare place_element.
 
 FINISH THE WHOLE ROUTINE — a placement ALONE is never "done". After you place the element you MUST
 continue: set EVERY parameter the routine lists (set_parameter on the placed element's id) and tag
@@ -629,7 +634,8 @@ def run_executor(
         except Exception as exc:
             emit("error", str(exc))
             return {"done": False, "summary": f"Executor error: {exc}",
-                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage}
+                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage,
+                    "nudged": completion_nudges}
 
         u = getattr(resp, "usage", None)
         if u is not None:
@@ -681,7 +687,8 @@ def run_executor(
             done = not missing
             emit("done", text)
             return {"done": done, "summary": text or "Routine complete.",
-                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage}
+                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage,
+                    "nudged": completion_nudges}
 
         results_content = []
         for tu in tool_uses:
@@ -719,7 +726,8 @@ def run_executor(
 
     emit("error", "iteration cap reached")
     return {"done": False, "summary": "Reached the step cap before finishing.",
-            "attempts": attempts, "tool_calls": tool_calls, "usage": usage}
+            "attempts": attempts, "tool_calls": tool_calls, "usage": usage,
+            "nudged": completion_nudges}
 
 
 def build_goal(motif: dict, location: dict | None = None, param_values: dict | None = None) -> str:

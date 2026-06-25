@@ -150,3 +150,88 @@ def test_record_host_wall(mem_file):
               "result": {"success": True, "element_id": 2}}]
     pm.learn_from_run(m, "r1", "Door", calls, done=True)
     assert m["routines"]["r1"]["last_host_wall_id"] == 1663968
+
+
+# ── Cross-run failure learning (learn_corrections) ──────────────────────────────────
+def test_learn_corrections_from_pure_failure(mem_file):
+    """The dominant real case: place_element returns 'created 0' and the run NEVER recovers.
+    A correction must still be stored (as a caution + the recovery to try first)."""
+    m = pm.load()
+    calls = [{"name": "place_element", "args": {"family_name": "M_Door-Vision"},
+              "result": {"success": False, "message": "Successfully created 0 element(s)."}}] * 3
+    pm.learn_corrections(m, "rD", "Door", calls, run_date="2026-06-26")
+    corr = m["routines"]["rD"]["corrections"]
+    assert len(corr) == 1
+    c = corr[0]
+    assert c["failed_tool"] == "place_element" and c["recovered"] is False
+    assert c["seen"] == 1 and c["last_run"] == "2026-06-26"
+    assert "place_and_configure" in c["fix"] and "host" in c["fix"].lower()
+    # surfaced near the top of the executor prompt
+    block = pm.to_prompt(m, "rD")
+    assert "WHAT WENT WRONG BEFORE ON THIS ROUTINE" in block
+    assert "AVOID:" in block and "DO THIS INSTEAD:" in block
+
+
+def test_learn_corrections_tool_switch_recovery(mem_file):
+    """place_element failed, place_and_configure with a host wall succeeded → a CONFIRMED fix."""
+    m = pm.load()
+    calls = [
+        {"name": "place_element", "args": {"family_name": "M_Door"},
+         "result": {"success": False, "message": "Successfully created 0 element(s)."}},
+        {"name": "get_selected_elements", "args": {}, "result": {"success": True, "selected_ids": [99]}},
+        {"name": "place_and_configure", "args": {"family_name": "M_Door", "host_wall_id": 99},
+         "result": {"success": True, "element_id": 7}},
+    ]
+    pm.learn_corrections(m, "rD", "Door", calls, run_date="2026-06-26")
+    c = m["routines"]["rD"]["corrections"][0]
+    assert c["recovered"] is True
+    assert "99" in c["fix"]                                    # records the host wall that worked
+
+
+def test_learn_corrections_dedup_and_upgrade(mem_file):
+    """Repeating a failure bumps `seen`; a later recovery upgrades the caution to a confirmed fix."""
+    m = pm.load()
+    fail = [{"name": "place_element", "args": {"family_name": "M_Door"},
+             "result": {"success": False, "message": "Successfully created 0 element(s)."}}]
+    pm.learn_corrections(m, "rD", "Door", fail, run_date="2026-06-25")
+    pm.learn_corrections(m, "rD", "Door", fail, run_date="2026-06-26")
+    corr = m["routines"]["rD"]["corrections"]
+    assert len(corr) == 1 and corr[0]["seen"] == 2            # deduped, not duplicated
+    assert corr[0]["recovered"] is False and corr[0]["last_run"] == "2026-06-26"
+    # now a run that recovers via host wall → same key upgrades in place
+    recover = fail + [{"name": "place_element", "args": {"family_name": "M_Door", "host_wall_id": 5},
+                       "result": {"success": True, "element_id": 1}}]
+    pm.learn_corrections(m, "rD", "Door", recover, run_date="2026-06-27")
+    corr = m["routines"]["rD"]["corrections"]
+    assert len(corr) == 1 and corr[0]["seen"] == 3 and corr[0]["recovered"] is True
+
+
+def test_learn_corrections_wrong_param_name(mem_file):
+    m = pm.load()
+    calls = [
+        {"name": "set_parameter", "args": {"element_id": 7, "name": "Comment", "value": "x"},
+         "result": {"success": False, "message": "parameter not found"}},
+        {"name": "set_parameter", "args": {"element_id": 7, "name": "Comments", "value": "x"},
+         "result": {"success": True, "message": "parameter set"}},
+    ]
+    pm.learn_corrections(m, "rW", "Wall", calls, run_date="2026-06-26")
+    c = next(c for c in m["routines"]["rW"]["corrections"] if c["failed_tool"] == "set_parameter")
+    assert c["recovered"] is True and "Comments" in c["fix"]
+
+
+def test_learn_corrections_ordering_nudge(mem_file):
+    """When the model stopped after placing and had to be pushed, store the ordering lesson."""
+    m = pm.load()
+    calls = [{"name": "place_element", "args": {"family_name": "M_Door"},
+              "result": {"success": True, "element_id": 7}}]
+    pm.learn_corrections(m, "rD", "Door", calls, nudged=1, run_date="2026-06-26")
+    c = next(c for c in m["routines"]["rD"]["corrections"] if c["failed_tool"] == "(completion)")
+    assert "same run" in c["fix"].lower() or "before ending" in c["fix"].lower()
+
+
+def test_to_prompt_clean_when_no_corrections(mem_file):
+    """A routine with no corrections must not emit the mistakes block (and stays empty when unknown)."""
+    m = pm.load()
+    pm.learn_substitution(m, "r1", "A", "B", "Door")
+    assert "WHAT WENT WRONG BEFORE" not in pm.to_prompt(m, "r1")
+    assert pm.to_prompt(pm.load(), "unknown") == ""

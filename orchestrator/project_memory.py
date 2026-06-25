@@ -157,10 +157,11 @@ def routine_mem(mem: dict, routine_id: str, label: str = "") -> dict:
     r = mem["routines"].get(routine_id)
     if r is None:
         r = {"label": label, "executions": 0, "family_substitutions": {},
-             "last_host_wall_id": None, "last_values": {}, "notes": []}
+             "last_host_wall_id": None, "last_values": {}, "corrections": [], "notes": []}
         mem["routines"][routine_id] = r
     if label and not r.get("label"):
         r["label"] = label
+    r.setdefault("corrections", [])      # routines persisted before failure-learning existed
     return r
 
 
@@ -188,6 +189,118 @@ def remember_loaded_families(mem: dict, category: str, families: list[str]) -> N
         mem["project"]["loaded_families"][category] = sorted(set(families))
 
 
+# ── Cross-run failure learning ────────────────────────────────────────────────────
+# The executor self-corrects WITHIN a run but starts blind every run, so it repeats the same
+# opening mistakes (live logs: place_element returned "created 0" 7x across runs, none recovered).
+# We mine the run's tool trace for CORRECTIONS — the failed approach + what to do instead — and
+# store them per routine so to_prompt() can warn the model BEFORE its first action. Learning works
+# from BOTH a failure→success delta AND a run that only ever failed (a caution is still high value;
+# the unrecovered "created 0" is exactly the mistake the user sees repeated).
+MAX_CORRECTIONS = 8
+
+# Placement tools the executor can use. A door/window placed with bare place_element at a point
+# with no host wall returns "created 0"; the robust path is place_and_configure WITH a host_wall_id.
+_BARE_PLACE = {"place_element", "create_point_based_element",
+               "create_line_based_element", "create_surface_based_element"}
+_ATOMIC_PLACE = {"place_and_configure"}
+_ALL_PLACE = _BARE_PLACE | _ATOMIC_PLACE
+_SETPARAM = {"set_parameter", "set_element_parameter"}
+
+
+def _ok(c: dict) -> bool:
+    return bool((c.get("result") or {}).get("success"))
+
+
+def _emsg(c: dict) -> str:
+    return ((c.get("result") or {}).get("message") or "").strip()
+
+
+def _norm_sig(msg: str) -> str:
+    """A stable, human-readable signature for a failure message (for dedupe + display)."""
+    return re.sub(r"\s+", " ", (msg or "").strip().rstrip(".")).lower()[:120] or "tool returned an error"
+
+
+def _add_correction(mem: dict, routine_id: str, label: str, *, failed_tool: str, failed_signature: str,
+                    fix: str, recovered: bool, run_date: str) -> None:
+    """Upsert a correction, keyed on (failed_tool, failed_signature): bump `seen`, upgrade `fix`
+    when a real recovery is found, and cap the list so stale corrections can't accumulate."""
+    corr = routine_mem(mem, routine_id, label)["corrections"]
+    for c in corr:
+        if (c.get("failed_tool"), c.get("failed_signature")) == (failed_tool, failed_signature):
+            c["seen"] = c.get("seen", 1) + 1
+            if recovered or not c.get("recovered"):
+                c["fix"] = fix                       # a confirmed fix supersedes an earlier caution
+            c["recovered"] = bool(c.get("recovered") or recovered)
+            if run_date:
+                c["last_run"] = run_date
+            break
+    else:
+        corr.append({"failed_tool": failed_tool, "failed_signature": failed_signature,
+                     "fix": fix, "recovered": bool(recovered), "seen": 1, "last_run": run_date or ""})
+    if len(corr) > MAX_CORRECTIONS:                  # keep the most-seen, then most-recent
+        corr.sort(key=lambda c: (c.get("seen", 1), c.get("last_run", "")), reverse=True)
+        del corr[MAX_CORRECTIONS:]
+
+
+def learn_corrections(mem: dict, routine_id: str, label: str, tool_calls: list[dict], *,
+                      nudged: int = 0, run_date: str | None = None) -> None:
+    """Derive corrections from a run's tool trace so the executor stops repeating mistakes.
+    Patterns (all reconstructable from the ordered tool_calls — retries stay in the same list):
+      1. place_element failed → recovered with place_and_configure / a host_wall_id  (tool-switch fix)
+      2. place_element failed and NEVER recovered                                    (caution + recovery)
+      3. set_parameter failed → succeeded under a different name                     (wrong-name fix)
+      4. the model stopped after placing and had to be nudged to finish             (ordering lesson)
+    """
+    if run_date is None:
+        from datetime import date
+        run_date = date.today().isoformat()
+    calls = tool_calls or []
+
+    # 1+2. placement — the dominant recurring mistake (wall-hosted family, bare point → "created 0").
+    place_fail = [c for c in calls if c.get("name") in _BARE_PLACE and not _ok(c)]
+    if place_fail:
+        fam = (place_fail[0].get("args") or {}).get("family_name") \
+            or (place_fail[0].get("args") or {}).get("name") or "this family"
+        sig = _norm_sig(_emsg(place_fail[-1]) or "successfully created 0 element(s)")
+        atomic_ok = any(c.get("name") in _ATOMIC_PLACE and _ok(c) for c in calls)
+        host_ok = next((c for c in calls if c.get("name") in _ALL_PLACE and _ok(c)
+                        and (c.get("args") or {}).get("host_wall_id")), None)
+        recovered = bool(atomic_ok or host_ok)
+        fix = (f"do not lead with place_element for '{fam}' (it is wall-hosted) — first get a host "
+               "wall id (get_selected_elements for the user's selected wall, or pick_point ON a wall), "
+               "then use place_and_configure with that host_wall_id")
+        if host_ok:
+            fix += f" (host wall {(host_ok.get('args') or {}).get('host_wall_id')} worked here before)"
+        elif not recovered:
+            fix += "; placing blind returned 'created 0' and never recovered"
+        _add_correction(mem, routine_id, label, failed_tool="place_element", failed_signature=sig,
+                        fix=fix, recovered=recovered, run_date=run_date)
+
+    # 3. set_parameter — failed under one name, succeeded under another.
+    sp_fail = [c for c in calls if c.get("name") in _SETPARAM and not _ok(c)]
+    if sp_fail:
+        bad = (sp_fail[0].get("args") or {}).get("name") or "the parameter"
+        good = next((c for c in calls if c.get("name") in _SETPARAM and _ok(c)
+                     and (c.get("args") or {}).get("name") and (c.get("args") or {}).get("name") != bad), None)
+        if good:
+            gn = (good.get("args") or {}).get("name")
+            fix, recovered = f"the working parameter name is '{gn}', not '{bad}' — set '{gn}' directly", True
+        else:
+            fix, recovered = (f"setting parameter '{bad}' failed — verify it exists on this element "
+                              "type before retrying"), False
+        _add_correction(mem, routine_id, label, failed_tool="set_parameter",
+                        failed_signature=_norm_sig(_emsg(sp_fail[-1]) or f"set_parameter {bad} failed"),
+                        fix=fix, recovered=recovered, run_date=run_date)
+
+    # 4. the model stopped after placing and had to be pushed to finish the routine.
+    if nudged:
+        _add_correction(mem, routine_id, label, failed_tool="(completion)",
+                        failed_signature="stopped after placing without finishing the routine",
+                        fix=("set EVERY parameter on the placed element and tag it in the SAME run as "
+                             "the placement, before ending the turn — a placement alone is never done"),
+                        recovered=True, run_date=run_date)
+
+
 # ── Rendering into context ────────────────────────────────────────────────────────
 def user_block(mem: dict) -> str:
     """The per-user profile rendered for a system prompt (used by the chat + executor)."""
@@ -212,8 +325,25 @@ def user_block(mem: dict) -> str:
             "user's stated preferences):\n- " + "\n- ".join(lines) + "\n")
 
 
+def corrections_block(mem: dict, routine_id: str) -> str:
+    """The 'mistakes you made before on THIS routine' block — surfaced near the TOP of the executor
+    prompt so the model applies the fix on its FIRST action instead of rediscovering it by failing."""
+    r = mem.get("routines", {}).get(routine_id) or {}
+    corr = r.get("corrections") or []
+    if not corr:
+        return ""
+    top = sorted(corr, key=lambda c: (c.get("seen", 1), c.get("last_run", "")), reverse=True)[:3]
+    bullets = []
+    for c in top:
+        last = c.get("last_run", "")
+        tail = f" (seen {c.get('seen', 1)}x" + (f"; last {last}" if last else "") + ")"
+        bullets.append(f"AVOID: {c.get('failed_signature', '')}. DO THIS INSTEAD: {c.get('fix', '')}{tail}.")
+    return ("\n\nWHAT WENT WRONG BEFORE ON THIS ROUTINE — AVOID REPEATING IT (apply this on your FIRST "
+            "action, before any place/set/tag):\n- " + "\n- ".join(bullets) + "\n")
+
+
 def to_prompt(mem: dict, routine_id: str) -> str:
-    """Full memory block for the executor: the user profile + what's known about this routine."""
+    """Full memory block for the executor: the user profile + mistakes-to-avoid + what's known."""
     lines: list[str] = []
     r = mem.get("routines", {}).get(routine_id)
     if r:
@@ -241,6 +371,7 @@ def to_prompt(mem: dict, routine_id: str) -> str:
                      "get_available_family_types — place one of these): " + " | ".join(parts))
 
     block = user_block(mem)
+    block += corrections_block(mem, routine_id)        # mistakes-to-avoid, high in the prompt
     if lines:
         block += ("\n\nWHAT YOU ALREADY KNOW ABOUT THIS PROJECT (memory — apply it before guessing):\n- "
                   + "\n- ".join(lines) + "\n")
