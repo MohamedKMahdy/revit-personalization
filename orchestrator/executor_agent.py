@@ -602,6 +602,61 @@ def _completion_nudge(missing: list[dict], placed_id) -> str:
               "step has a successful tool result.")
 
 
+# ── Adaptive model escalation (cost) ───────────────────────────────────────────────
+# Start a KNOWN, simple routine on a cheap model (Haiku ~3x cheaper than Sonnet) and only escalate
+# to the configured ceiling if it struggles. Cold/novel/complex routines start on the ceiling. This
+# is only worthwhile when the ceiling is a PAID Claude model — if the executor is on Gemini (free),
+# starting on paid Haiku would cost MORE, so adaptive is skipped.
+ADAPTIVE_START = os.environ.get("EXECUTOR_ADAPTIVE", "1").lower() not in ("0", "false", "no", "")
+CHEAP_MODEL = llm.resolve(os.environ.get("EXECUTOR_CHEAP_MODEL", "haiku"))
+ESCALATE_AFTER_FAILURES = int(os.environ.get("EXECUTOR_ESCALATE_AFTER_FAILURES", "2"))
+
+
+def _is_simple_motif(motif: dict) -> bool:
+    """A routine the cheap model can likely handle: only place / set-parameter / tag / create steps."""
+    steps = motif.get("steps", []) if isinstance(motif, dict) else []
+    if not steps:
+        return False
+    for s in steps:
+        a = (s.get("action_type") or s.get("action") or "").lower()
+        if not (any(t in a for t in ("place", "set", "param", "tag", "create")) or s.get("param_name")):
+            return False
+    return True
+
+
+def choose_start_model(motif: dict, routine_entry: dict | None) -> tuple[str, str | None]:
+    """(start_model, escalate_to). For a memory-WARM, simple routine on a paid ceiling, start cheap
+    (Haiku) and escalate to the ceiling on difficulty; otherwise start on the ceiling with no
+    escalation. routine_entry is project_memory's per-routine dict (executions / known host / subs)."""
+    ceiling = EXECUTOR_MODEL
+    if not ADAPTIVE_START or llm.is_gemini(ceiling) or llm.resolve(ceiling) == CHEAP_MODEL:
+        return ceiling, None                              # free tier, disabled, or already cheapest
+    r = routine_entry or {}
+    warm = bool(r.get("executions", 0) or r.get("last_host_wall_id") or r.get("family_substitutions"))
+    if warm and _is_simple_motif(motif):
+        return CHEAP_MODEL, ceiling
+    return ceiling, None
+
+
+def _preflight_facts(dispatch_fn: Callable[[str, dict], dict],
+                     emit: Callable[[str, Any], None]) -> str:
+    """Best-effort READ-ONLY grounding before the agentic loop: read the user's current Revit
+    selection once and hand it to the model, so it leads with the right host instead of spending a
+    model round-trip discovering it (or placing blind). Never raises; returns "" if nothing useful."""
+    try:
+        sel = dispatch_fn("get_selected_elements", {}) or {}
+    except Exception:
+        return ""
+    ids = sel.get("selected_ids") or []
+    if not ids:
+        return ""
+    emit("reasoning", f"Pre-flight: you have {len(ids)} element(s) selected in Revit.")
+    return ("LIVE CONTEXT (read from Revit before you start): the user currently has element id(s) "
+            f"{ids} selected. If a step needs a host wall (a door/window), use the selected WALL's id "
+            "as host_wall_id and place via place_and_configure — do NOT call pick_point or place "
+            "blind. If a selected id is not a wall, ignore it for hosting.")
+
+
 def run_executor(
     goal: str,
     *,
@@ -614,6 +669,9 @@ def run_executor(
     max_iters: int = MAX_ITERS,
     model: str = EXECUTOR_MODEL,
     memory_block: str = "",
+    escalate_to: str | None = None,
+    escalate_after_failures: int = ESCALATE_AFTER_FAILURES,
+    preflight: bool = True,
 ) -> dict:
     """Run the self-healing execution loop. Returns
        {done, summary, steps, attempts, tool_calls:[{name,args,result}]}.
@@ -638,11 +696,19 @@ def run_executor(
     tools_param = TOOL_SCHEMAS if cache else TOOL_SCHEMAS_PLAIN
     # The 1-hour TTL needs the extended-cache beta header (only when actually caching on Claude).
     extra_headers = _CACHE_BETA_HEADER if (cache and _EXTENDED_TTL) else None
+
+    # PRE-FLIGHT: read the live Revit selection once and prepend it to the goal, so the model leads
+    # with the correct host instead of burning a round-trip discovering it (or placing blind).
+    if preflight:
+        facts = _preflight_facts(dispatch_fn, emit)
+        if facts:
+            goal = facts + "\n\n" + goal
     messages: list[dict] = [{"role": "user", "content": goal}]
     tool_calls: list[dict] = []
     attempts = 0
     api_reaffirmed = False     # has the agent reaffirmed an API-fallback escalation this turn?
     completion_nudges = 0      # times we've re-prompted the model to finish unfinished routine steps
+    escalated = False          # have we stepped the cheap start model up to the ceiling this run?
     usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
 
     for _ in range(max_iters):
@@ -656,7 +722,7 @@ def run_executor(
             emit("error", str(exc))
             return {"done": False, "summary": f"Executor error: {exc}",
                     "attempts": attempts, "tool_calls": tool_calls, "usage": usage, "model": model,
-                    "nudged": completion_nudges}
+                    "nudged": completion_nudges, "escalated": escalated}
 
         u = getattr(resp, "usage", None)
         if u is not None:
@@ -709,7 +775,7 @@ def run_executor(
             emit("done", text)
             return {"done": done, "summary": text or "Routine complete.",
                     "attempts": attempts, "tool_calls": tool_calls, "usage": usage, "model": model,
-                    "nudged": completion_nudges}
+                    "nudged": completion_nudges, "escalated": escalated}
 
         results_content = []
         for tu in tool_uses:
@@ -745,10 +811,21 @@ def run_executor(
 
         messages.append({"role": "user", "content": results_content})
 
+        # ADAPTIVE ESCALATION: if we started on the cheap model and it's accumulating failures, step
+        # up to the ceiling and keep going (same message history; Haiku→Sonnet are both direct-Anthropic
+        # so the existing client serves either). Triggers at most once per run.
+        if escalate_to and not escalated and llm.resolve(model) != llm.resolve(escalate_to):
+            fails = sum(1 for c in tool_calls if not (c.get("result") or {}).get("success"))
+            if fails >= escalate_after_failures:
+                model = llm.resolve(escalate_to)
+                escalated = True
+                emit("reasoning", f"Escalating to {model} after {fails} failed attempt(s) on the "
+                                  "cheaper model.")
+
     emit("error", "iteration cap reached")
     return {"done": False, "summary": "Reached the step cap before finishing.",
             "attempts": attempts, "tool_calls": tool_calls, "usage": usage, "model": model,
-            "nudged": completion_nudges}
+            "nudged": completion_nudges, "escalated": escalated}
 
 
 def build_goal(motif: dict, location: dict | None = None, param_values: dict | None = None) -> str:

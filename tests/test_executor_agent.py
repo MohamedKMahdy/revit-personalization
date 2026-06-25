@@ -346,7 +346,7 @@ def test_confirm_gate_allows_when_approved():
         Resp([_txt("done")]),
     ]
     dispatched = []
-    out = ex.run_executor("goal", client=FakeClient(script), guard_api_fallback=False,
+    out = ex.run_executor("goal", client=FakeClient(script), guard_api_fallback=False, preflight=False,
                           dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True, "result": "1"}),
                           confirm_fn=lambda n, a: True)
     assert dispatched == ["execute_revit_api"] and out["tool_calls"][0]["result"]["success"] is True
@@ -359,7 +359,7 @@ def test_confirm_gate_skips_readonly_api_calls():
         Resp([_txt("done")]),
     ]
     confirms, dispatched = [], []
-    out = ex.run_executor("goal", client=FakeClient(script), guard_api_fallback=False,
+    out = ex.run_executor("goal", client=FakeClient(script), guard_api_fallback=False, preflight=False,
                           dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True}),
                           confirm_fn=lambda n, a: (confirms.append(n) or False))
     assert confirms == []                       # read-only not gated
@@ -375,7 +375,7 @@ def test_api_fallback_nudged_then_allowed_on_reaffirm():
         Resp([_txt("done")]),
     ]
     dispatched = []
-    out = ex.run_executor("goal", client=FakeClient(script),     # guard on by default
+    out = ex.run_executor("goal", client=FakeClient(script), preflight=False,   # guard on by default
                           dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True, "result": "1"}))
     assert [c["name"] for c in out["tool_calls"]] == ["execute_revit_api", "execute_revit_api"]
     assert dispatched == ["execute_revit_api"]                   # only the SECOND (reaffirmed) ran
@@ -393,7 +393,7 @@ def test_api_nudge_rearms_after_a_structured_tool():
         Resp([_txt("ok")]),
     ]
     dispatched = []
-    out = ex.run_executor("goal", client=FakeClient(script),
+    out = ex.run_executor("goal", client=FakeClient(script), preflight=False,
                           dispatch_fn=lambda n, a: (dispatched.append(n) or {"success": True}))
     assert dispatched == ["get_active_view"]                     # both API calls nudged, not run
     assert out["tool_calls"][0]["result"]["success"] is False
@@ -554,6 +554,95 @@ def test_no_required_means_legacy_done():
     out = ex.run_executor("goal", client=FakeClient(script),
                           dispatch_fn=lambda n, a: {"success": True, "element_id": 1})
     assert out["done"] is True and [c["name"] for c in out["tool_calls"]] == ["place_element"]
+
+
+def test_preflight_facts_from_selection():
+    """Pre-flight reads the live selection and turns it into a host-wall instruction; empty/erroring
+    selections yield no facts (best-effort, never raises)."""
+    facts = ex._preflight_facts(lambda n, a: {"success": True, "selected_ids": [777, 778]}, lambda *_: None)
+    assert "777" in facts and "host_wall_id" in facts
+    assert ex._preflight_facts(lambda n, a: {"success": True, "selected_ids": []}, lambda *_: None) == ""
+    def _raise(n, a):
+        raise RuntimeError("no Revit")
+    assert ex._preflight_facts(_raise, lambda *_: None) == ""
+
+
+def test_preflight_runs_before_loop_and_emits():
+    """run_executor reads the selection ONCE up front and emits a pre-flight reasoning event."""
+    script = [Resp([_txt("Nothing to do.")])]
+    events = []
+    ex.run_executor("goal", client=FakeClient(script),
+                    dispatch_fn=lambda n, a: {"success": True, "selected_ids": [42]},
+                    on_event=lambda k, p: events.append((k, p)))
+    assert any(k == "reasoning" and "Pre-flight" in str(p) for k, p in events)
+
+
+def test_preflight_can_be_disabled():
+    """preflight=False makes no selection query (so a routine that doesn't need it isn't slowed)."""
+    calls = []
+    ex.run_executor("goal", client=FakeClient([Resp([_txt("done")])]),
+                    dispatch_fn=lambda n, a: (calls.append(n) or {"success": True}), preflight=False)
+    assert "get_selected_elements" not in calls
+
+
+def test_choose_start_model_warm_simple_starts_cheap(monkeypatch):
+    """A memory-WARM, simple routine on a paid ceiling starts on the cheap model and escalates up."""
+    monkeypatch.setattr(ex, "EXECUTOR_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setattr(ex, "ADAPTIVE_START", True)
+    monkeypatch.setattr(ex, "CHEAP_MODEL", "claude-haiku-4-5")
+    simple = {"steps": [{"action_type": "Place", "family_name": "M_Door"},
+                        {"action_type": "SetParam", "param_name": "Mark"}, {"action_type": "Tag"}]}
+    start, esc = ex.choose_start_model(simple, {"executions": 3})
+    assert start == "claude-haiku-4-5" and esc == "claude-sonnet-4-6"
+
+
+def test_choose_start_model_cold_or_complex_starts_on_ceiling(monkeypatch):
+    monkeypatch.setattr(ex, "EXECUTOR_MODEL", "claude-sonnet-4-6")
+    monkeypatch.setattr(ex, "ADAPTIVE_START", True)
+    monkeypatch.setattr(ex, "CHEAP_MODEL", "claude-haiku-4-5")
+    simple = {"steps": [{"action_type": "Place", "family_name": "M_Door"}]}
+    assert ex.choose_start_model(simple, {}) == ("claude-sonnet-4-6", None)              # cold (no executions)
+    assert ex.choose_start_model(simple, None) == ("claude-sonnet-4-6", None)
+    # a non-place/set/tag step makes it "not simple" → start on the ceiling even if warm
+    complex_ = {"steps": [{"action_type": "DeleteElement"}]}
+    assert ex.choose_start_model(complex_, {"executions": 9}) == ("claude-sonnet-4-6", None)
+
+
+def test_choose_start_model_noop_on_gemini(monkeypatch):
+    """When the ceiling is the free Gemini tier, never start on paid Haiku (that would cost MORE)."""
+    monkeypatch.setattr(ex, "EXECUTOR_MODEL", "gemini-flash")
+    monkeypatch.setattr(ex, "ADAPTIVE_START", True)
+    simple = {"steps": [{"action_type": "Place", "family_name": "M_Door"}]}
+    assert ex.choose_start_model(simple, {"executions": 3}) == ("gemini-flash", None)
+
+
+def test_adaptive_escalation_steps_up_after_failures():
+    """Starting cheap, after `escalate_after_failures` failures the run steps up to the ceiling."""
+    script = [
+        Resp([_tu("place_element", {"family_name": "M_Door", "location": {"x": 0, "y": 0}}, "t1")]),
+        Resp([_tu("place_element", {"family_name": "M_Door", "location": {"x": 1, "y": 0}}, "t2")]),
+        Resp([_txt("stuck")]),
+    ]
+    events = []
+    out = ex.run_executor("goal", client=FakeClient(script),
+                          dispatch_fn=lambda n, a: {"success": False, "message": "Successfully created 0 element(s)."},
+                          model="haiku", escalate_to="sonnet", escalate_after_failures=2,
+                          on_event=lambda k, p: events.append((k, p)), preflight=False)
+    assert out["escalated"] is True
+    assert out["model"] == "claude-sonnet-4-6"                       # ended on the ceiling
+    assert any(k == "reasoning" and "Escalating" in str(p) for k, p in events)
+
+
+def test_no_escalation_when_cheap_model_succeeds():
+    """If the cheap model finishes without enough failures, it never escalates (stays cheap)."""
+    script = [
+        Resp([_tu("place_element", {"family_name": "M_Door", "location": {"x": 0, "y": 0}}, "t1")]),
+        Resp([_txt("done")]),
+    ]
+    out = ex.run_executor("goal", client=FakeClient(script),
+                          dispatch_fn=lambda n, a: {"success": True, "element_id": 1},
+                          model="haiku", escalate_to="sonnet", escalate_after_failures=2, preflight=False)
+    assert out["escalated"] is False and out["model"] == "claude-haiku-4-5"
 
 
 def test_events_streamed():

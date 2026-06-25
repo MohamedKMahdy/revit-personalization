@@ -202,7 +202,7 @@ def quality_score(motif: dict, ground_truth: list[dict]) -> int:
 
 def _run_one(routine, k: int, rep: int, gt_steps: list[dict]) -> dict:
     """Run Pattern Agent once and return a result row dict."""
-    import anthropic
+    from shared import llm
 
     examples = routine.examples[:k] if rep == 1 else random.sample(routine.examples, k)
 
@@ -222,13 +222,16 @@ def _run_one(routine, k: int, rep: int, gt_steps: list[dict]) -> dict:
         "Return ONLY the JSON motif object."
     )
 
-    client = anthropic.Anthropic()
+    # Route through the single source of truth (shared/llm): Claude goes direct, Gemini via the
+    # LiteLLM proxy. Without this the harness built a bare Anthropic() client and always sent the
+    # `thinking` param, so any non-Claude MODEL (e.g. the gemini default) mis-routed / 400'd.
+    client = llm.client(MODEL)
     t0 = time.time()
-    # Fixed: use adaptive thinking (budget_tokens removed in Opus 4.7+)
     response = client.messages.create(
         model=MODEL,
         max_tokens=16000,
-        thinking={"type": "adaptive"},
+        # thinking is Claude-only — drop it for Gemini (adaptive; budget_tokens removed in Opus 4.7+)
+        **({"thinking": {"type": "adaptive"}} if llm.supports_thinking(MODEL) else {}),
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_msg}],
     )

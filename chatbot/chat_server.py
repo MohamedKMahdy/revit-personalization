@@ -47,7 +47,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
 from orchestrator.executor_agent import (run_executor, build_goal, required_steps_from_motif,
-                                          placed_element_id, resolve_routine_values)
+                                          placed_element_id, resolve_routine_values, choose_start_model)
 from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -173,7 +173,7 @@ def _log_executor_run(routine_id: str, label: str, goal: str, result: dict) -> N
         entry = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "user": pm.current_user(), "routine_id": routine_id, "label": label,
-            "goal": (goal or "")[:200], "model": model,
+            "goal": (goal or "")[:200], "model": model, "escalated": bool(result.get("escalated")),
             "done": bool(result.get("done")), "attempts": result.get("attempts"),
             "api_fallback_calls": sum(1 for s in steps if s["tool"] == "execute_revit_api"),
             "usage": usage, "est_cost_usd": est_cost, "paid": not llm.is_gemini(model),
@@ -784,6 +784,11 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
     param_values = resolve_routine_values(motif, rec.get("examples", []), _last_vals)
     param_values.update(rec.get("param_overrides") or {})   # a value the user typed in chat wins
 
+    # COST: for a memory-warm, simple routine on a paid ceiling, start cheap (Haiku) and escalate to
+    # the ceiling only if it struggles; cold/novel routines start on the ceiling. No-op on Gemini.
+    _routine_entry = (_mem.get("routines", {}) or {}).get(routine_id) or {}
+    start_model, escalate_to = choose_start_model(motif, _routine_entry)
+
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
 
@@ -812,7 +817,8 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         task = asyncio.create_task(asyncio.to_thread(
             run_executor, build_goal(motif, location, param_values),
             on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block,
-            required=required_steps_from_motif(motif, param_values)))
+            required=required_steps_from_motif(motif, param_values),
+            model=start_model, escalate_to=escalate_to))
         idle = 0
         while not (task.done() and queue.empty()):
             try:
