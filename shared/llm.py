@@ -90,10 +90,18 @@ def pick(role_env: str, default: str) -> str:
     return resolve(raw)
 
 
+# Gemini's FREE tier is rate-limited per MINUTE (~10-15 requests/min on Flash), and the executor's
+# agentic loop fires one request per step — so a multi-step routine bursts past the cap and gets a
+# 429. Let the SDK absorb that: more retries + exponential backoff (~1,2,4,8,16,32s) spans the 60s
+# window, so the run pauses and recovers instead of dying. Override with GEMINI_MAX_RETRIES.
+_GEMINI_MAX_RETRIES = int(os.environ.get("GEMINI_MAX_RETRIES", "6"))
+
+
 def _client_kwargs(model_id: str) -> dict:
     if is_gemini(model_id):
         # Route through the local LiteLLM proxy (Anthropic Messages format → Gemini).
-        return {"base_url": LITELLM_BASE_URL, "api_key": _LITELLM_KEY}
+        return {"base_url": LITELLM_BASE_URL, "api_key": _LITELLM_KEY,
+                "max_retries": _GEMINI_MAX_RETRIES}
     return {}  # direct to Anthropic; ANTHROPIC_API_KEY resolved from the environment
 
 
