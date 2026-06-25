@@ -165,17 +165,18 @@ def _log_executor_run(routine_id: str, label: str, goal: str, result: dict) -> N
                 step["mode"] = a.get("transactionMode", "auto")
             steps.append(step)
         usage = result.get("usage") or {}
-        # Rough $ estimate at Sonnet-4.6 rates ($3/$15 per MTok; cache read 0.1x, write 1.25x).
-        # `input` is the UNCACHED remainder — cached tools/system land in cache_read at ~1/10th cost.
-        est_cost = round((usage.get("input", 0) * 3 + usage.get("cache_read", 0) * 0.30
-                          + usage.get("cache_write", 0) * 3.75 + usage.get("output", 0) * 15) / 1e6, 4)
+        # Cost the run at the rates of the model that ACTUALLY ran (recorded in the result), via the
+        # single source of truth in shared/llm. A Gemini run correctly costs $0 (free tier) instead
+        # of being mis-billed at Sonnet rates — without this, free runs showed a phantom ~$0.38.
+        model = result.get("model") or llm.pick("EXECUTOR_MODEL", "claude-sonnet-4-6")
+        est_cost = llm.est_cost_usd(model, usage)
         entry = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "user": pm.current_user(), "routine_id": routine_id, "label": label,
-            "goal": (goal or "")[:200],
+            "goal": (goal or "")[:200], "model": model,
             "done": bool(result.get("done")), "attempts": result.get("attempts"),
             "api_fallback_calls": sum(1 for s in steps if s["tool"] == "execute_revit_api"),
-            "usage": usage, "est_cost_usd": est_cost,
+            "usage": usage, "est_cost_usd": est_cost, "paid": not llm.is_gemini(model),
             "steps": steps,
         }
         _EXECUTOR_LOG.parent.mkdir(parents=True, exist_ok=True)

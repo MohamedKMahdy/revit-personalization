@@ -105,6 +105,35 @@ def _client_kwargs(model_id: str) -> dict:
     return {}  # direct to Anthropic; ANTHROPIC_API_KEY resolved from the environment
 
 
+# Approximate USD per 1M tokens: (input, output, cache_read, cache_write). These are CONFIGURABLE
+# estimates for cost logging/telemetry, not billing — verify against https://www.anthropic.com/pricing
+# before quoting them in the thesis. Anthropic's structure is cache_read ~0.1x input, cache_write
+# ~1.25x input. Gemini runs on the FREE tier here, so it is costed at 0 (see price()).
+PRICING = {
+    "claude-opus-4-8":   (15.0, 75.0, 1.50, 18.75),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30, 3.75),
+    "claude-haiku-4-5":  (1.0, 5.0, 0.10, 1.25),
+}
+
+
+def price(model_id: str) -> tuple:
+    """(input, output, cache_read, cache_write) USD/MTok for a model. Gemini free tier → all zero;
+    an unknown Claude id falls back to Sonnet rates so cost is never silently undercounted."""
+    m = resolve(model_id)
+    if is_gemini(m):
+        return (0.0, 0.0, 0.0, 0.0)
+    return PRICING.get(m, PRICING["claude-sonnet-4-6"])
+
+
+def est_cost_usd(model_id: str, usage: dict) -> float:
+    """Estimated USD for a run's token usage {input, output, cache_read, cache_write} on `model_id`.
+    Routes through price(), so a Gemini run correctly costs 0 instead of being billed at Claude rates."""
+    pin, pout, pcr, pcw = price(model_id)
+    u = usage or {}
+    return round((u.get("input", 0) * pin + u.get("output", 0) * pout
+                  + u.get("cache_read", 0) * pcr + u.get("cache_write", 0) * pcw) / 1e6, 6)
+
+
 def client(model_id: str):
     """A sync `anthropic` client wired to the right backend for `model_id`."""
     import anthropic

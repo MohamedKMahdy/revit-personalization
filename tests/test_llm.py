@@ -52,3 +52,26 @@ def test_client_routing():
     # A Gemini client can be constructed with no ANTHROPIC_API_KEY (it carries base_url + a dummy key)
     c = llm.client("gemini-flash")
     assert str(c.base_url).rstrip("/").startswith("http")
+
+
+def test_gemini_client_has_429_backoff():
+    """The Gemini free tier is rate-limited per minute; the client must carry extra retries."""
+    assert llm._client_kwargs("gemini-flash")["max_retries"] >= 2
+    assert "max_retries" not in llm._client_kwargs("claude-sonnet-4-6")   # Anthropic SDK default
+
+
+def test_cost_is_model_aware():
+    """A Gemini run is FREE (0), a Claude run is priced by its own rates — so cost logging never
+    bills a free run at Claude rates (the phantom ~$0.38 bug) and Haiku reads cheaper than Sonnet."""
+    u = {"input": 100_000, "output": 1_000, "cache_read": 50_000, "cache_write": 0}
+    assert llm.est_cost_usd("gemini-flash", u) == 0.0                     # free tier
+    assert llm.est_cost_usd("gemini-pro", u) == 0.0
+    sonnet = llm.est_cost_usd("sonnet", u)
+    haiku = llm.est_cost_usd("haiku", u)
+    opus = llm.est_cost_usd("opus", u)
+    assert sonnet > 0 and haiku > 0
+    assert haiku < sonnet < opus                                         # tier ordering holds
+    # an unknown Claude id must not silently cost 0 — falls back to Sonnet rates
+    assert llm.est_cost_usd("claude-future-9", u) == sonnet
+    # empty usage costs nothing
+    assert llm.est_cost_usd("sonnet", {}) == 0.0

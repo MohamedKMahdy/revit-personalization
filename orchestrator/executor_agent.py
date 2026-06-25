@@ -187,10 +187,28 @@ ALLOWED_TOOLS = {t["name"] for t in TOOL_SCHEMAS}
 # COST: the tool block (~30 verbose schemas) is identical on every call and dominates the input
 # tokens. A cache_control breakpoint on the LAST tool lets the API serve the whole tools+system
 # prefix from cache on repeat calls (~0.1x price) instead of re-billing every schema on every loop
-# iteration. Prompt caching is GA — no beta header. (Copy the last dict so we don't mutate the
-# shared revit_tools/EXECUTE_API_TOOL definitions.)
+# iteration. Measured: the prefix is ~19.8K tokens; a warm Sonnet call reads all of it from cache.
+#
+# TTL: the default ephemeral cache is 5 MINUTES. This loop can stall far longer than that on a
+# pick_point — the USER has to click in Revit, which can take minutes — so the prefix would expire
+# mid-run and get re-billed at full price on the next iteration. We use the 1-HOUR extended TTL so
+# the prefix survives those waits; the only cost is a slightly dearer one-time write (~2x vs 1.25x).
+# Set EXECUTOR_CACHE_TTL="" (or "5m") to fall back to the default 5-minute cache. (Copy the last
+# dict so we don't mutate the shared revit_tools/EXECUTE_API_TOOL definitions.)
+_CACHE_TTL = os.environ.get("EXECUTOR_CACHE_TTL", "1h").strip()
+_EXTENDED_TTL = _CACHE_TTL not in ("", "5m")           # 1h needs the extended-cache-ttl beta header
+_CACHE_BETA_HEADER = {"anthropic-beta": "extended-cache-ttl-2025-04-11"}
+
+
+def _cache_control() -> dict:
+    cc = {"type": "ephemeral"}
+    if _CACHE_TTL:
+        cc["ttl"] = _CACHE_TTL
+    return cc
+
+
 if TOOL_SCHEMAS:
-    TOOL_SCHEMAS[-1] = {**TOOL_SCHEMAS[-1], "cache_control": {"type": "ephemeral"}}
+    TOOL_SCHEMAS[-1] = {**TOOL_SCHEMAS[-1], "cache_control": _cache_control()}
 
 # Cache-free copy of the tool schemas for backends that don't support Anthropic prompt caching
 # (Gemini via the LiteLLM proxy) — sending cache_control there is at best ignored, at worst a 400.
@@ -615,9 +633,11 @@ def run_executor(
     # Cache the tools+system prefix on Claude (iterations 2+ read it at ~0.1x). Gemini can't cache,
     # so send the plain string + cache-free tools there.
     cache = llm.supports_prompt_caching(model)
-    system_param = ([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    system_param = ([{"type": "text", "text": system, "cache_control": _cache_control()}]
                     if cache else system)
     tools_param = TOOL_SCHEMAS if cache else TOOL_SCHEMAS_PLAIN
+    # The 1-hour TTL needs the extended-cache beta header (only when actually caching on Claude).
+    extra_headers = _CACHE_BETA_HEADER if (cache and _EXTENDED_TTL) else None
     messages: list[dict] = [{"role": "user", "content": goal}]
     tool_calls: list[dict] = []
     attempts = 0
@@ -630,11 +650,12 @@ def run_executor(
             resp = client.messages.create(
                 model=model, max_tokens=1024, system=system_param,
                 tools=tools_param, messages=messages,
+                **({"extra_headers": extra_headers} if extra_headers else {}),
             )
         except Exception as exc:
             emit("error", str(exc))
             return {"done": False, "summary": f"Executor error: {exc}",
-                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage,
+                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage, "model": model,
                     "nudged": completion_nudges}
 
         u = getattr(resp, "usage", None)
@@ -687,7 +708,7 @@ def run_executor(
             done = not missing
             emit("done", text)
             return {"done": done, "summary": text or "Routine complete.",
-                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage,
+                    "attempts": attempts, "tool_calls": tool_calls, "usage": usage, "model": model,
                     "nudged": completion_nudges}
 
         results_content = []
@@ -726,7 +747,7 @@ def run_executor(
 
     emit("error", "iteration cap reached")
     return {"done": False, "summary": "Reached the step cap before finishing.",
-            "attempts": attempts, "tool_calls": tool_calls, "usage": usage,
+            "attempts": attempts, "tool_calls": tool_calls, "usage": usage, "model": model,
             "nudged": completion_nudges}
 
 
