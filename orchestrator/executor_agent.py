@@ -239,10 +239,31 @@ YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
 - "no valid host" / "no host found": the element is wall-hosted (door/window) and there is
   no wall at that point. Recover: call pick_point (tell the user to click ON a wall), then
   retry place_element at that point — or pass host_wall_id if you know a wall.
-- "created 0" / "type not found" / "family not loaded": call get_available_family_types for
-  the category, pick the CLOSEST loaded family to what the routine asked for, and retry.
-- A structured tool returning an error is EXPECTED and recoverable — stay on the structured tools
-  and fix the call. NEVER respond to a place/set/tag/create failure by switching to the Revit API
+- "created 0" / "type not found" / "family not loaded": FIRST call get_available_family_types for
+  the category — if the family is genuinely NOT loaded, pick the closest loaded one and retry.
+- HOSTED FAMILIES (doors & windows) — IMPORTANT, READ THIS: place_element / create_point_based_element
+  CANNOT place a wall-hosted family. It returns "success, created 0 element(s)" and places NOTHING,
+  even with the correct loaded family, a valid point on the wall, and host_wall_id. This is a REAL
+  capability gap, NOT a recoverable structured-tool error. So: if the family is a door or window
+  and a place attempt returns "created 0" while the family IS loaded, do NOT keep retrying
+  place_element and do NOT keep re-picking points — go straight to execute_revit_api and place it
+  with the Revit API. Exact pattern (fill in the family name, host wall id, and mm point on the wall):
+      var wall = document.GetElement(new ElementId(HOST_WALL_ID)) as Autodesk.Revit.DB.Wall;
+      var level = document.GetElement(wall.LevelId) as Autodesk.Revit.DB.Level;
+      var sym = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
+          .Cast<FamilySymbol>().FirstOrDefault(s => s.FamilyName == "FAMILY_NAME");
+      if (sym == null) return "symbol not found";
+      if (!sym.IsActive) sym.Activate();
+      var pt = new XYZ(X_MM/304.8, Y_MM/304.8, 0);   // a point ON the wall (use its centerline X/Y)
+      var inst = document.Create.NewFamilyInstance(pt, sym, wall, level,
+          Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
+      return inst == null ? "null" : inst.Id.ToString();
+  Get HOST_WALL_ID from get_selected_elements or by querying the model for a wall; get the wall's
+  centerline X/Y from its bounding box (the door sits on the wall). Then set parameters + tag the
+  returned id normally. (For NON-hosted families — furniture, generic models — place_element works.)
+- For NON-hosted placements, a structured tool returning an error is EXPECTED and recoverable — stay
+  on the structured tools and fix the call. Do NOT respond to a non-hosted place/set/tag/create
+  failure by switching to the Revit API
   fallback; that tool is only for operations no structured tool supports (see below).
 - After 3 failed attempts on the SAME step, stop and explain what you tried and why you're stuck.
 - If the memory block below contains a "WHAT WENT WRONG BEFORE ON THIS ROUTINE" section, treat it as
@@ -414,6 +435,19 @@ def needs_confirmation(name: str, args: dict) -> bool:
     Revit API fallback that WRITES (transactionMode != 'none') — read-only queries run free."""
     if name == "execute_revit_api":
         return str((args or {}).get("transactionMode", "auto")).lower() != "none"
+    return False
+
+
+def _hit_hosted_placement_gap(tool_calls: list[dict]) -> bool:
+    """True if a placement attempt already returned the 'created 0 / no element' signature. The
+    structured placement (create_point_based_element) CANNOT host doors/windows — it silently creates
+    nothing — so once that's happened, dropping to execute_revit_api (NewFamilyInstance + host) is the
+    LEGITIMATE recovery and the API nudge should not block it."""
+    for c in tool_calls:
+        if c.get("name") in PLACE_TOOLS:
+            msg = ((c.get("result") or {}).get("message") or "").lower()
+            if "created 0" in msg or "0 element" in msg or "no element" in msg:
+                return True
     return False
 
 
@@ -785,8 +819,12 @@ def run_executor(
                 result = {"success": False, "message": f"tool '{name}' is not allowed"}
             else:
                 emit("tool", {"name": name, "args": args})
-                if guard_api_fallback and name == "execute_revit_api" and not api_reaffirmed:
+                if (guard_api_fallback and name == "execute_revit_api" and not api_reaffirmed
+                        and not _hit_hosted_placement_gap(tool_calls)):
                     # First escalation to raw API this turn — redirect to structured tools once.
+                    # EXCEPTION: if a placement already returned "created 0" (the structured tool can't
+                    # host this family — doors/windows), dropping to the API IS the legitimate fix, so
+                    # don't nudge it (the confirmation gate still applies before any write runs).
                     api_reaffirmed = True
                     result = {"success": False, "message": API_NUDGE}
                 elif confirm_fn is not None and needs_confirmation(name, args) and not confirm_fn(name, args):

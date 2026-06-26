@@ -262,17 +262,20 @@ def learn_corrections(mem: dict, routine_id: str, label: str, tool_calls: list[d
         fam = (place_fail[0].get("args") or {}).get("family_name") \
             or (place_fail[0].get("args") or {}).get("name") or "this family"
         sig = _norm_sig(_emsg(place_fail[-1]) or "successfully created 0 element(s)")
-        atomic_ok = any(c.get("name") in _ATOMIC_PLACE and _ok(c) for c in calls)
+        # Recovery for a HOSTED family is the Revit API (NewFamilyInstance) — NOT place_and_configure,
+        # which has no host parameter and also creates 0. A successful execute_revit_api after the
+        # failure is the real fix signal.
+        api_ok = any(c.get("name") == "execute_revit_api" and _ok(c) for c in calls)
         host_ok = next((c for c in calls if c.get("name") in _ALL_PLACE and _ok(c)
                         and (c.get("args") or {}).get("host_wall_id")), None)
-        recovered = bool(atomic_ok or host_ok)
-        fix = (f"do not lead with place_element for '{fam}' (it is wall-hosted) — first get a host "
-               "wall id (get_selected_elements for the user's selected wall, or pick_point ON a wall), "
-               "then use place_and_configure with that host_wall_id")
-        if host_ok:
-            fix += f" (host wall {(host_ok.get('args') or {}).get('host_wall_id')} worked here before)"
-        elif not recovered:
-            fix += "; placing blind returned 'created 0' and never recovered"
+        recovered = bool(api_ok or host_ok)
+        fix = (f"'{fam}' is wall-hosted — place_element/place_and_configure return 'created 0' for it "
+               "(the structured tools cannot host a door/window). Place it with execute_revit_api: "
+               "document.Create.NewFamilyInstance(point_on_wall, family_symbol, host_wall, level, "
+               "NonStructural). Get the host wall id (get_selected_elements or query walls) and a "
+               "point on the wall's centerline, then set parameters + tag the returned id.")
+        if not recovered:
+            fix += " (never recovered last time — go to the API route directly)"
         _add_correction(mem, routine_id, label, failed_tool="place_element", failed_signature=sig,
                         fix=fix, recovered=recovered, run_date=run_date)
 

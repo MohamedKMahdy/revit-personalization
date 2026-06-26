@@ -400,6 +400,42 @@ def test_api_nudge_rearms_after_a_structured_tool():
     assert out["tool_calls"][2]["result"]["success"] is False    # nudged again after the re-arm
 
 
+def test_hit_hosted_placement_gap():
+    """The 'created 0 / no element' signature on a placement marks the hosted-placement gap."""
+    assert ex._hit_hosted_placement_gap(
+        [{"name": "place_element", "args": {}, "result": {"success": False, "message": "Successfully created 0 element(s)."}}]) is True
+    assert ex._hit_hosted_placement_gap(
+        [{"name": "place_element", "args": {}, "result": {"success": False, "message": "no valid host found"}}]) is False
+    assert ex._hit_hosted_placement_gap(
+        [{"name": "place_element", "args": {}, "result": {"success": True, "element_id": 1}}]) is False
+    assert ex._hit_hosted_placement_gap(
+        [{"name": "get_active_view", "args": {}, "result": {"success": True}}]) is False
+
+
+def test_api_fallback_allowed_after_created_zero():
+    """A wall-hosted family that returns 'created 0' is a REAL capability gap (the structured tool
+    can't host it) → the API fallback must NOT be nudged; it runs (subject to the confirm gate)."""
+    script = [
+        Resp([_tu("place_element", {"family_name": "M_Door-Vision", "location": {"x": 0, "y": 0}}, "t1")]),
+        Resp([_tu("execute_revit_api", {"purpose": "host the door via NewFamilyInstance",
+                                        "code": "return document.Create.NewFamilyInstance(...);",
+                                        "transactionMode": "auto"}, "t2")]),
+        Resp([_txt("Door placed via the API.")]),
+    ]
+
+    def fake_dispatch(name, args):
+        if name == "place_element":
+            return {"success": False, "message": "Successfully created 0 element(s)."}
+        if name == "execute_revit_api":
+            return {"success": True, "result": "555"}
+        return {"success": True}
+
+    out = ex.run_executor("goal", client=FakeClient(script), dispatch_fn=fake_dispatch, preflight=False)
+    api = next(c for c in out["tool_calls"] if c["name"] == "execute_revit_api")
+    assert api["result"]["success"] is True                       # ran, not nudged
+    assert "ONLY for operations" not in str(api["result"].get("message", ""))
+
+
 def test_required_steps_from_motif():
     motif = {"steps": [
         {"action": "Place", "family_type": "M_Single-Flush"},

@@ -146,6 +146,31 @@ def _next_confirm_id() -> str:
 
 _EXECUTOR_LOG = (Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
                  / "RevitPersonalization" / "logs" / "executor_runs.jsonl")
+# Full, reviewable transcript of every run (reasoning + tool args + results) — the "log the
+# conversations so you can review and fix it" store. One JSON line per run.
+_EXECUTOR_TRANSCRIPT = _EXECUTOR_LOG.parent / "executor_transcripts.jsonl"
+
+
+def _log_executor_transcript(routine_id: str, label: str, goal: str, result: dict,
+                             events: list) -> None:
+    """Append the COMPLETE run transcript so a failed run can be read back and debugged: the goal,
+    every streamed reasoning line, and every tool call WITH its args + full result (the compact
+    executor_runs.jsonl deliberately omits args/full results to stay scannable; this keeps them)."""
+    try:
+        entry = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "user": pm.current_user(), "routine_id": routine_id, "label": label,
+            "model": result.get("model"), "escalated": bool(result.get("escalated")),
+            "done": bool(result.get("done")), "attempts": result.get("attempts"),
+            "summary": result.get("summary"), "goal": goal,
+            "events": events,                              # reasoning + tool(args) + result(full) stream
+            "tool_calls": result.get("tool_calls", []),    # name + args + full result, in order
+        }
+        _EXECUTOR_TRANSCRIPT.parent.mkdir(parents=True, exist_ok=True)
+        with _EXECUTOR_TRANSCRIPT.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
 
 
 def _log_executor_run(routine_id: str, label: str, goal: str, result: dict) -> None:
@@ -791,8 +816,12 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
+    transcript_events: list = []          # captured for the reviewable on-disk transcript
 
     def on_event(kind, payload):
+        # capture the FULL stream (reasoning + tool args + results) so a run can be reviewed/debugged
+        # later — this is the on-disk record of exactly what the executor said and did.
+        transcript_events.append({"kind": kind, "payload": payload})
         # bridge the synchronous executor thread → the async SSE queue
         loop.call_soon_threadsafe(queue.put_nowait, {"kind": kind, "payload": payload})
 
@@ -838,7 +867,11 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
             rec["status"] = "executed"
         _save_history()
 
-        _log_executor_run(routine_id, label, build_goal(motif, location, param_values), result)
+        _goal_text = build_goal(motif, location, param_values)
+        _log_executor_run(routine_id, label, _goal_text, result)
+        # FULL reviewable transcript: every reasoning line + tool call WITH args + full result, so a
+        # failed run can be read back and debugged (the compact run-log omits args).
+        _log_executor_transcript(routine_id, label, _goal_text, result, transcript_events)
 
         # Write back what the executor learned (family substitution, host wall, values) so the
         # assistant goes straight to it next time — this is the project understanding accruing.

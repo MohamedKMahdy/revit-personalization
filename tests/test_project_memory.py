@@ -172,20 +172,21 @@ def test_learn_corrections_from_pure_failure(mem_file):
     assert "AVOID:" in block and "DO THIS INSTEAD:" in block
 
 
-def test_learn_corrections_tool_switch_recovery(mem_file):
-    """place_element failed, place_and_configure with a host wall succeeded → a CONFIRMED fix."""
+def test_learn_corrections_api_recovery(mem_file):
+    """place_element ('created 0') recovered via the Revit API (NewFamilyInstance) → CONFIRMED fix
+    pointing at the API route (NOT place_and_configure, which also can't host)."""
     m = pm.load()
     calls = [
         {"name": "place_element", "args": {"family_name": "M_Door"},
          "result": {"success": False, "message": "Successfully created 0 element(s)."}},
         {"name": "get_selected_elements", "args": {}, "result": {"success": True, "selected_ids": [99]}},
-        {"name": "place_and_configure", "args": {"family_name": "M_Door", "host_wall_id": 99},
-         "result": {"success": True, "element_id": 7}},
+        {"name": "execute_revit_api", "args": {"purpose": "host a door"},
+         "result": {"success": True, "result": "770123"}},
     ]
     pm.learn_corrections(m, "rD", "Door", calls, run_date="2026-06-26")
     c = m["routines"]["rD"]["corrections"][0]
     assert c["recovered"] is True
-    assert "99" in c["fix"]                                    # records the host wall that worked
+    assert "execute_revit_api" in c["fix"] and "NewFamilyInstance" in c["fix"]
 
 
 def test_learn_corrections_dedup_and_upgrade(mem_file):
