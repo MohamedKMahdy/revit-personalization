@@ -85,47 +85,52 @@ def _call_plugin(command: str, params: dict, timeout: float = REVIT_PLUGIN_TIMEO
         "id": request_id,
     })
 
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect((REVIT_PLUGIN_HOST, REVIT_PLUGIN_PORT))
-            s.sendall(payload.encode("utf-8"))
+    # The plugin's TCP socket occasionally refuses a connection transiently (Revit busy / the
+    # IExternalEvent loop mid-cycle) even while Revit is open — which surfaced as place_element
+    # randomly failing with "not reachable" mid-run. Retry the CONNECTION a couple times with a short
+    # backoff so a blip doesn't kill a step; a truly-closed Revit still falls through to the error.
+    not_reachable = {
+        "error": (f"mcp-servers-for-revit C# plugin not reachable at "
+                  f"{REVIT_PLUGIN_HOST}:{REVIT_PLUGIN_PORT}. "
+                  "Ensure Revit 2025/2026 is open with the plugin installed."),
+        "available": False,
+    }
+    attempts = max(1, int(os.environ.get("REVIT_PLUGIN_RETRIES", "2")) + 1)
+    for attempt in range(attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect((REVIT_PLUGIN_HOST, REVIT_PLUGIN_PORT))
+                s.sendall(payload.encode("utf-8"))
 
-            # Read until we have a complete JSON response
-            chunks = []
-            while True:
-                chunk = s.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk.decode("utf-8"))
-                buf = "".join(chunks)
-                try:
-                    response = json.loads(buf)
-                    break
-                except json.JSONDecodeError:
-                    continue  # keep reading
+                # Read until we have a complete JSON response
+                chunks = []
+                while True:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk.decode("utf-8"))
+                    buf = "".join(chunks)
+                    try:
+                        response = json.loads(buf)
+                        break
+                    except json.JSONDecodeError:
+                        continue  # keep reading
 
-        if "error" in response:
-            err = response["error"]
-            return {"error": err.get("message", str(err)) if isinstance(err, dict) else str(err)}
-        return response.get("result", {})
+            if "error" in response:
+                err = response["error"]
+                return {"error": err.get("message", str(err)) if isinstance(err, dict) else str(err)}
+            return response.get("result", {})
 
-    except (ConnectionRefusedError, OSError):
-        return {
-            "error": (
-                f"mcp-servers-for-revit C# plugin not reachable at "
-                f"{REVIT_PLUGIN_HOST}:{REVIT_PLUGIN_PORT}. "
-                "Ensure Revit 2025/2026 is open with the plugin installed."
-            ),
-            "available": False,
-        }
-    except socket.timeout:
-        return {
-            "error": f"Command '{command}' timed out after {timeout}s",
-            "available": False,
-        }
-    except Exception as exc:
-        return {"error": str(exc)}
+        except (ConnectionRefusedError, OSError):
+            if attempt < attempts - 1:
+                time.sleep(0.4 * (attempt + 1))   # transient blip — back off and retry the connection
+                continue
+            return not_reachable
+        except socket.timeout:
+            return {"error": f"Command '{command}' timed out after {timeout}s", "available": False}
+        except Exception as exc:
+            return {"error": str(exc)}
 
 
 def pick_point(mode: str = "point", prompt: str | None = None, timeout: float = 190.0) -> dict:

@@ -63,7 +63,10 @@ CURATED_SCHEMAS: list[dict] = [
                     "required": ["x", "y"],
                 },
                 "type_name": {"type": "string", "description": "Optional type/size, e.g. '900 x 2100mm'"},
-                "host_wall_id": {"type": "integer", "description": "Optional explicit host wall element id"},
+                "host_wall_id": {"type": "integer", "description": "Optional explicit host wall element id "
+                                 "(for a wall-hosted door/window — the element snaps onto this wall)"},
+                "category": {"type": "string", "description": "Optional category hint to speed up family "
+                             "resolution, e.g. 'OST_Doors', 'OST_Windows', 'OST_Furniture'"},
             },
             "required": ["family_name", "location"],
         },
@@ -241,29 +244,15 @@ YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
   retry place_element at that point — or pass host_wall_id if you know a wall.
 - "created 0" / "type not found" / "family not loaded": FIRST call get_available_family_types for
   the category — if the family is genuinely NOT loaded, pick the closest loaded one and retry.
-- HOSTED FAMILIES (doors & windows) — IMPORTANT, READ THIS: place_element / create_point_based_element
-  CANNOT place a wall-hosted family. It returns "success, created 0 element(s)" and places NOTHING,
-  even with the correct loaded family, a valid point on the wall, and host_wall_id. This is a REAL
-  capability gap, NOT a recoverable structured-tool error. So: if the family is a door or window
-  and a place attempt returns "created 0" while the family IS loaded, do NOT keep retrying
-  place_element and do NOT keep re-picking points — go straight to execute_revit_api and place it
-  with the Revit API. Exact pattern (fill in the family name, host wall id, and mm point on the wall):
-      var wall = document.GetElement(new ElementId(HOST_WALL_ID)) as Autodesk.Revit.DB.Wall;
-      var level = document.GetElement(wall.LevelId) as Autodesk.Revit.DB.Level;
-      var sym = new FilteredElementCollector(document).OfClass(typeof(FamilySymbol))
-          .Cast<FamilySymbol>().FirstOrDefault(s => s.FamilyName == "FAMILY_NAME");
-      if (sym == null) return "symbol not found";
-      if (!sym.IsActive) sym.Activate();
-      var pt = new XYZ(X_MM/304.8, Y_MM/304.8, 0);   // a point ON the wall (use its centerline X/Y)
-      var inst = document.Create.NewFamilyInstance(pt, sym, wall, level,
-          Autodesk.Revit.DB.Structure.StructuralType.NonStructural);
-      return inst == null ? "null" : inst.Id.ToString();
-  Get HOST_WALL_ID from get_selected_elements or by querying the model for a wall; get the wall's
-  centerline X/Y from its bounding box (the door sits on the wall). Then set parameters + tag the
-  returned id normally. (For NON-hosted families — furniture, generic models — place_element works.)
-- For NON-hosted placements, a structured tool returning an error is EXPECTED and recoverable — stay
-  on the structured tools and fix the call. Do NOT respond to a non-hosted place/set/tag/create
-  failure by switching to the Revit API
+- HOSTED FAMILIES (doors & windows): place_element places these correctly — it resolves the family
+  to its loaded type and hosts it on a wall — BUT it needs a host wall. So for a door/window, pass
+  host_wall_id: get it from get_selected_elements (the user's selected wall) or pick_point ON a wall,
+  then call place_element with that host_wall_id and a point on the wall. If place_element still
+  returns "created 0" AFTER you have given a valid host_wall_id and confirmed the family is loaded
+  (get_available_family_types), only THEN treat it as a capability gap and use execute_revit_api
+  (document.Create.NewFamilyInstance(point, symbol, hostWall, level, NonStructural)).
+- A structured tool returning an error is EXPECTED and recoverable — stay on the structured tools and
+  fix the call. Do NOT respond to a normal place/set/tag/create failure by switching to the Revit API
   fallback; that tool is only for operations no structured tool supports (see below).
 - After 3 failed attempts on the SAME step, stop and explain what you tried and why you're stuck.
 - If the memory block below contains a "WHAT WENT WRONG BEFORE ON THIS ROUTINE" section, treat it as
@@ -309,6 +298,39 @@ you'll be told — then explain what you'd need instead.
 
 # ── Real Revit dispatch (each tool → revit_bridge plugin call) ────────────────────
 
+# The plugin's create_point_based_element resolves the family to place from a FamilyTypeId (or a
+# category) — its PointElement model has NO family-name field, so sending a name silently resolves
+# nothing and it "succeeds" creating 0 elements. So place_element must resolve the family NAME to a
+# loaded FamilyTypeId first. These are the categories we search when no explicit category is given.
+_PLACEABLE_CATEGORIES = [
+    "OST_Doors", "OST_Windows", "OST_Furniture", "OST_Casework", "OST_GenericModel",
+    "OST_PlumbingFixtures", "OST_LightingFixtures", "OST_ElectricalFixtures",
+    "OST_SpecialtyEquipment", "OST_FurnitureSystems", "OST_MechanicalEquipment",
+    "OST_Planting", "OST_Entourage", "OST_Columns", "OST_StructuralColumns",
+]
+
+
+def _resolve_type_id(family_name: str, type_name: str | None = None,
+                     category: str | None = None) -> tuple:
+    """Resolve a family (+optional type) to its loaded FamilyTypeId. Returns (type_id|None, category).
+    Needed because create_point_based_element matches by typeId/category, NOT by family name."""
+    from mcp_server import revit_bridge as rb
+    cats = [category] if category else _PLACEABLE_CATEGORIES
+    res = rb._call_plugin("get_available_family_types", {"categoryList": cats})
+    rows = res if isinstance(res, list) else []
+    fam = (family_name or "").strip().lower()
+    matches = [r for r in rows if (r.get("FamilyName") or "").strip().lower() == fam]
+    if not matches:
+        return None, category
+    tn = (type_name or "").strip().lower()
+    chosen = (next((r for r in matches if (r.get("TypeName") or "").strip().lower() == tn), None)
+              if tn else None) or matches[0]
+    try:
+        return int(chosen.get("FamilyTypeId")), category
+    except (TypeError, ValueError):
+        return None, category
+
+
 def _ok(res: Any) -> bool:
     return isinstance(res, dict) and bool(res.get("Success"))
 
@@ -325,20 +347,32 @@ def real_dispatch(name: str, args: dict) -> dict:
 
     if name == "place_element":
         loc = args.get("location", {})
+        # Resolve the family NAME -> a loaded FamilyTypeId (the plugin matches by typeId/category, not
+        # by name — sending a name created 0 elements every time). This is what makes placement work.
+        type_id, cat = _resolve_type_id(args.get("family_name"), args.get("type_name"),
+                                        args.get("category"))
+        if type_id is None and not cat:
+            return {"success": False,
+                    "message": (f"family '{args.get('family_name')}' is not loaded "
+                                "(no matching type found). Call get_available_family_types for the "
+                                "right category and place a family that is actually loaded.")}
         data: dict = {
-            "name": args["family_name"],
             "locationPoint": {"x": loc.get("x", 0), "y": loc.get("y", 0), "z": loc.get("z", 0)},
             "baseLevel": 0, "baseOffset": 0,
         }
-        if args.get("type_name"):
-            data["typeName"] = args["type_name"]
+        if type_id is not None:
+            data["typeId"] = type_id            # resolved family/type id — the field the plugin reads
+        if cat:
+            data["category"] = cat
         if args.get("host_wall_id"):
-            data["hostWallId"] = int(args["host_wall_id"])
+            data["hostWallId"] = int(args["host_wall_id"])   # the handler hosts doors/windows on it
         res = rb._call_plugin("create_point_based_element", {"data": [data]})
         eid = rb._extract_element_id(res) if isinstance(res, dict) else None
         if _ok(res) and eid:
             return {"success": True, "message": "placed", "element_id": eid}
-        return {"success": False, "message": _msg(res) or "no element created (no host or family not loaded)"}
+        return {"success": False,
+                "message": _msg(res) or "no element created (check the family is loaded and, for a "
+                                        "door/window, that host_wall_id is a wall at this point)"}
 
     if name == "set_parameter":
         res = rb._call_plugin("set_element_parameter", {

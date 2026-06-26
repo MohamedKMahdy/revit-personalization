@@ -165,28 +165,28 @@ def test_learn_corrections_from_pure_failure(mem_file):
     c = corr[0]
     assert c["failed_tool"] == "place_element" and c["recovered"] is False
     assert c["seen"] == 1 and c["last_run"] == "2026-06-26"
-    assert "place_and_configure" in c["fix"] and "host" in c["fix"].lower()
+    assert "host" in c["fix"].lower() and "place_element" in c["fix"]
     # surfaced near the top of the executor prompt
     block = pm.to_prompt(m, "rD")
     assert "WHAT WENT WRONG BEFORE ON THIS ROUTINE" in block
     assert "AVOID:" in block and "DO THIS INSTEAD:" in block
 
 
-def test_learn_corrections_api_recovery(mem_file):
-    """place_element ('created 0') recovered via the Revit API (NewFamilyInstance) → CONFIRMED fix
-    pointing at the API route (NOT place_and_configure, which also can't host)."""
+def test_learn_corrections_host_recovery(mem_file):
+    """place_element ('created 0') recovered by re-placing WITH a host_wall_id → CONFIRMED fix that
+    records the host wall and points at giving place_element a host (not the API)."""
     m = pm.load()
     calls = [
         {"name": "place_element", "args": {"family_name": "M_Door"},
          "result": {"success": False, "message": "Successfully created 0 element(s)."}},
         {"name": "get_selected_elements", "args": {}, "result": {"success": True, "selected_ids": [99]}},
-        {"name": "execute_revit_api", "args": {"purpose": "host a door"},
-         "result": {"success": True, "result": "770123"}},
+        {"name": "place_element", "args": {"family_name": "M_Door", "host_wall_id": 99},
+         "result": {"success": True, "element_id": 7}},
     ]
     pm.learn_corrections(m, "rD", "Door", calls, run_date="2026-06-26")
     c = m["routines"]["rD"]["corrections"][0]
     assert c["recovered"] is True
-    assert "execute_revit_api" in c["fix"] and "NewFamilyInstance" in c["fix"]
+    assert "99" in c["fix"] and "host" in c["fix"].lower()
 
 
 def test_learn_corrections_dedup_and_upgrade(mem_file):

@@ -223,6 +223,49 @@ def test_inspect_model_no_walls_stops_gracefully():
     assert "wall" in out["summary"].lower()
 
 
+def test_place_element_resolves_typeid_and_hosts(monkeypatch):
+    """THE placement fix: place_element must resolve the family NAME -> a loaded FamilyTypeId and send
+    `typeId` (+ host_wall_id) to create_point_based_element — the plugin ignores the family name."""
+    from mcp_server import revit_bridge as rb
+    sent = {}
+
+    def fake_call(command, params=None, timeout=None):
+        if command == "get_available_family_types":
+            return [{"FamilyName": "M_Door-Passage-Single-Vision_Lite", "TypeName": "0915x2134mm",
+                     "FamilyTypeId": 1448999}]
+        if command == "create_point_based_element":
+            sent["data"] = params["data"][0]
+            return {"Success": True, "Response": [50001], "Message": "Successfully created 1 element(s)."}
+        return {}
+
+    monkeypatch.setattr(rb, "_call_plugin", fake_call)
+    out = ex.real_dispatch("place_element", {"family_name": "M_Door-Passage-Single-Vision_Lite",
+                                             "type_name": "0915x2134mm", "location": {"x": 11920, "y": -1850},
+                                             "host_wall_id": 1663971})
+    assert out["success"] is True and out["element_id"] == 50001
+    assert sent["data"]["typeId"] == 1448999          # resolved id sent, NOT a family name
+    assert "name" not in sent["data"]                  # the ignored field is gone
+    assert sent["data"]["hostWallId"] == 1663971       # host passed so the door snaps to the wall
+
+
+def test_place_element_unloaded_family_reports_clearly(monkeypatch):
+    """If the family isn't loaded anywhere, placement returns a clear, recoverable error."""
+    from mcp_server import revit_bridge as rb
+    monkeypatch.setattr(rb, "_call_plugin", lambda c, p=None, timeout=None: [] if c == "get_available_family_types" else {})
+    out = ex.real_dispatch("place_element", {"family_name": "Nonexistent", "location": {"x": 0, "y": 0}})
+    assert out["success"] is False and "not loaded" in out["message"].lower()
+
+
+def test_resolve_type_id(monkeypatch):
+    from mcp_server import revit_bridge as rb
+    rows = [{"FamilyName": "M_Door", "TypeName": "A", "FamilyTypeId": 11},
+            {"FamilyName": "M_Door", "TypeName": "B", "FamilyTypeId": 22}]
+    monkeypatch.setattr(rb, "_call_plugin", lambda c, p=None, timeout=None: rows)
+    assert ex._resolve_type_id("M_Door", "B")[0] == 22         # exact type match
+    assert ex._resolve_type_id("M_Door")[0] == 11              # first type when unspecified
+    assert ex._resolve_type_id("Missing")[0] is None           # not loaded
+
+
 def test_real_dispatch_query_tools(monkeypatch):
     """The new read tools map onto the right plugin calls and normalize their results."""
     from mcp_server import revit_bridge as rb
