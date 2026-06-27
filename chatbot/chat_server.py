@@ -219,6 +219,21 @@ def _existing_param_values(routine_id: str, motif: dict, param_names: list) -> d
         return {}
 
 
+def _live_context() -> dict:
+    """Best-effort live context for value resolution (the active level), so a conditional / per-level
+    rule can apply at runtime. Bounded + degrades to {} on any failure (never blocks a run)."""
+    try:
+        from mcp_server import revit_bridge as rb
+        r = rb._call_plugin("get_current_view_info", {})
+        d = r.get("Response") if isinstance(r, dict) else r
+        d = d if isinstance(d, dict) else {}
+        level = (d.get("LevelName") or d.get("Level") or d.get("AssociatedLevel")
+                 or (d.get("Properties") or {}).get("Level"))
+        return {"level": str(level)} if level else {}
+    except Exception:
+        return {}
+
+
 def _log_executor_run(routine_id: str, label: str, goal: str, result: dict) -> None:
     """Append a compact record of an agentic execution run so it can be inspected on disk.
     Each step logs the tool, success, and (for the Revit API fallback) its purpose/mode — so an
@@ -878,7 +893,9 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
                    if s.get("param_name") and ((s.get("param_value_type") or "").lower() == "variable"
                                                or s.get("param_value") in (None, ""))]
     _existing = await asyncio.to_thread(_existing_param_values, routine_id, motif, _var_params)
-    param_values = resolve_routine_values(motif, rec.get("examples", []), _last_vals, existing_values=_existing)
+    _ctx = await asyncio.to_thread(_live_context)
+    param_values = resolve_routine_values(motif, rec.get("examples", []), _last_vals,
+                                          existing_values=_existing, context=_ctx)
     param_values.update(rec.get("param_overrides") or {})   # a value the user typed in chat wins
 
     # COMPILED-SKILL deterministic replay: if this routine was already distilled into a program AND we

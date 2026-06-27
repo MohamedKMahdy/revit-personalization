@@ -641,9 +641,33 @@ def next_from_rule(rule: dict, used=None) -> str:
     return f"{rule['prefix']}{str(n).zfill(rule['pad'])}{rule['suffix']}"
 
 
+def _example_contexts(examples: list, pn: str) -> list:
+    """For variable param `pn`, build [{value, context}] from the examples — context = the sibling
+    param values + level observed in the SAME example — so rule_induction.induce_rule can infer a
+    conditional or a per-context sequence (e.g. Mark per level)."""
+    def _c(v):
+        return None if v is None or str(v).strip().lower() in ("", "none", "null") else v
+    rows = []
+    for e in (examples or []):
+        val, ctx = None, {}
+        for a in (e.get("actions") or []):
+            an, av = a.get("param_name"), _c(a.get("param_value_after") or a.get("param_value"))
+            if an == pn:
+                if av is not None:
+                    val = av
+            elif an and av is not None:
+                ctx[an] = av
+            if a.get("level_name"):
+                ctx.setdefault("level", a.get("level_name"))
+        if val is not None:
+            rows.append({"value": val, "context": ctx})
+    return rows
+
+
 def resolve_routine_values(motif: dict, examples: list | None = None,
                            last_values: dict | None = None,
-                           existing_values: dict | None = None) -> dict:
+                           existing_values: dict | None = None,
+                           context: dict | None = None) -> dict:
     """Decide the value to USE for each parameter the routine sets. A constant value stays; a
     variable one (e.g. Mark) becomes the NEXT in its observed sequence — incremented from the value
     we last set (project memory), or from the highest value seen in the recorded examples.
@@ -651,6 +675,7 @@ def resolve_routine_values(motif: dict, examples: list | None = None,
     `existing_values` = {param_name: set(values already in the LIVE model)}: a computed variable value
     is advanced past any value already in use, so we never silently assign a DUPLICATE Mark (Revit
     allows duplicate marks but flags them as a warning — and a BIM reviewer will catch it)."""
+    from .rule_induction import induce_rule, apply_rule    # lazy import — avoids a circular import
     examples = examples or []
     last_values = last_values or {}
     existing = existing_values or {}
@@ -658,8 +683,16 @@ def resolve_routine_values(motif: dict, examples: list | None = None,
     def _clean(v):
         return None if v is None or str(v).strip().lower() in ("", "none", "null") else v
 
+    steps = motif.get("steps", []) if isinstance(motif, dict) else []
+    # Context for conditional / per-context rules: the routine's CONSTANT params + any live context
+    # passed in (e.g. the active level), augmented per-param with values resolved earlier in this pass.
+    base_ctx = {s.get("param_name"): _clean(s.get("param_value")) for s in steps
+                if s.get("param_name") and (s.get("param_value_type") or "").lower() != "variable"
+                and _clean(s.get("param_value")) is not None}
+    base_ctx.update({k: v for k, v in (context or {}).items() if v is not None})
+
     out: dict = {}
-    for s in (motif.get("steps", []) if isinstance(motif, dict) else []):
+    for s in steps:
         pn = s.get("param_name")
         if not pn:
             continue
@@ -668,6 +701,15 @@ def resolve_routine_values(motif: dict, examples: list | None = None,
         if pv is not None and ptype != "variable":
             out[pn] = pv                                # constant — use as recorded
             continue
+        # CONTEXTUAL UNDERSTANDING: a conditional (value chosen by a condition on a sibling/level) or a
+        # per-context sequence (e.g. Mark numbered per level), induced from the examples' context and
+        # applied with the live context. Used only when a rule is found AND it determines a value.
+        crule = induce_rule(_example_contexts(examples, pn))
+        if crule:
+            cval = apply_rule(crule, {**base_ctx, **out}, existing.get(pn))
+            if cval is not None:
+                out[pn] = cval
+                continue
         # UNDERSTAND THE SEQUENCE: gather every observed value for this param (the value we set last
         # + all recorded examples) and INDUCE its generating rule (prefix/step/zero-pad), so the next
         # value follows the user's actual pattern (e.g. step 5, or per-scheme zero-pad) rather than a

@@ -600,6 +600,35 @@ def test_resolve_uses_induced_step_not_plus_one():
     assert ex.resolve_routine_values(motif, examples=two)["Mark"] == "D-104"
 
 
+def test_resolve_applies_conditional_from_sibling_context():
+    """Live wiring: a Frame value chosen by the sibling Width — generalizes to the live instance."""
+    motif = {"steps": [{"action_type": "SetParam", "param_name": "Frame",
+                        "param_value": None, "param_value_type": "variable"}]}
+    examples = [
+        {"actions": [{"param_name": "Frame", "param_value_after": "Wide"},
+                     {"param_name": "Width", "param_value_after": "1600"}]},
+        {"actions": [{"param_name": "Frame", "param_value_after": "Wide"},
+                     {"param_name": "Width", "param_value_after": "2000"}]},
+        {"actions": [{"param_name": "Frame", "param_value_after": "Standard"},
+                     {"param_name": "Width", "param_value_after": "900"}]},
+        {"actions": [{"param_name": "Frame", "param_value_after": "Standard"},
+                     {"param_name": "Width", "param_value_after": "1000"}]}]
+    assert ex.resolve_routine_values(motif, examples=examples, context={"Width": "2400"})["Frame"] == "Wide"
+    assert ex.resolve_routine_values(motif, examples=examples, context={"Width": "800"})["Frame"] == "Standard"
+
+
+def test_resolve_applies_per_level_sequence_with_live_level():
+    """Live wiring: Mark continues the ACTIVE level's own sequence, not the global last value."""
+    motif = {"steps": [{"action_type": "SetParam", "param_name": "Mark",
+                        "param_value": None, "param_value_type": "variable"}]}
+    examples = ([{"actions": [{"param_name": "Mark", "param_value_after": f"D-1{i:02d}",
+                              "level_name": "L1"}]} for i in range(1, 4)]
+                + [{"actions": [{"param_name": "Mark", "param_value_after": f"D-2{i:02d}",
+                                "level_name": "L2"}]} for i in range(1, 4)])
+    assert ex.resolve_routine_values(motif, examples=examples, context={"level": "L2"})["Mark"] == "D-204"
+    assert ex.resolve_routine_values(motif, examples=examples, context={"level": "L1"})["Mark"] == "D-104"
+
+
 def test_resolve_routine_values_skips_existing_marks():
     """A computed variable value must not collide with one already in the live model (no duplicate Mark)."""
     motif = {"steps": [{"action_type": "SetParam", "param_name": "Mark",
