@@ -1052,12 +1052,16 @@ def build_goal(motif: dict, location: dict | None = None, param_values: dict | N
     return "\n".join(lines)
 
 
-def build_freeform_goal(task: str) -> str:
+def build_freeform_goal(task: str, context: str = "") -> str:
     """Wrap a free-form natural-language request as an executor goal — the conversational path that
     handles ARBITRARY tasks and model questions, not just learned routines. The executor already has
     the full read/query/create tool surface, so this just frames the request + the ground-first and
-    do-only-what-was-asked discipline."""
+    do-only-what-was-asked discipline. `context` carries the recent conversation + work already done
+    so consecutive related tasks don't re-do completed steps."""
+    ctx = ("RECENT CONVERSATION & WORK ALREADY DONE (build on this — do NOT redo steps already "
+           f"completed):\n{context.strip()}\n\n" if context and context.strip() else "")
     return (
+        ctx +
         "The user asked you to do the following in their LIVE Revit model:\n\n"
         f"    {task.strip()}\n\n"
         "Carry it out with the tools. GROUND yourself first with the read/query tools "

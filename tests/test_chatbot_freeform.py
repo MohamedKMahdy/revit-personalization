@@ -71,6 +71,31 @@ def test_execute_task_passes_confirm_fn_for_writes(client, monkeypatch):
     assert seen["has_confirm_fn"] is True
 
 
+def test_execute_task_carries_context_and_writes_outcome_back(client, monkeypatch):
+    """Cross-task memory: the executor receives recent conversation context, and the task OUTCOME is
+    written back into the conversation (merged into the trailing assistant turn to keep roles
+    alternating) so the next turn knows what was done and the agent stops re-doing it."""
+    rid = "routine_writeback_test"
+    cs._patterns[rid] = {"id": rid, "label": "x", "status": "new",
+                         "history": [{"role": "user", "content": "tag the doors"},
+                                     {"role": "assistant", "content": "On it. ##TASK: tag all doors##"}]}
+    captured = {}
+
+    def fake_run(goal, *, on_event=None, confirm_fn=None, memory_block="", **kw):
+        captured["goal"] = goal
+        return {"done": True, "summary": "Tagged 10 doors.", "attempts": 10, "tool_calls": [], "usage": {}}
+
+    monkeypatch.setattr(cs, "run_executor", fake_run)
+    try:
+        client.post("/api/execute-task", json={"text": "tag all doors", "pattern_id": rid})
+        assert "tag the doors" in captured["goal"]                 # recent context fed into the executor
+        hist = cs._patterns[rid]["history"]
+        assert hist[-1]["role"] == "assistant" and "Tagged 10 doors." in hist[-1]["content"]
+        assert sum(1 for m in hist if m["role"] == "assistant") == 1   # merged, not a 2nd assistant turn
+    finally:
+        cs._patterns.pop(rid, None)
+
+
 def test_predict_endpoint_returns_prediction(client, monkeypatch):
     monkeypatch.setattr("mcp_server.log_reader.load_real_action_records", lambda: [], raising=False)
     monkeypatch.setattr("mcp_server.log_reader.list_candidate_routines", lambda *a, **k: [], raising=False)

@@ -946,6 +946,19 @@ async def api_execute_task(body: MessageIn):
     if not task:
         return StreamingResponse(_err("No task given"), media_type="text/event-stream")
 
+    # Tie the task to the active conversation so it has CROSS-TASK memory: feed the recent turns to
+    # the executor (so it doesn't re-do completed work) and write the outcome BACK into the history
+    # (so the next chat turn knows what was done instead of re-issuing the same task).
+    rec = _rec_for(body.pattern_id)
+    context = ""
+    if rec and rec.get("history"):
+        turns = []
+        for m in rec["history"][-6:]:
+            c = _TOKEN_RE.sub("", str(m.get("content", ""))).strip()
+            if c and c != "__INIT__":
+                turns.append(f"{m.get('role')}: {c[:220]}")
+        context = "\n".join(turns)
+
     memory_block = _user_memory_prefix()          # user profile context (no routine)
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -966,7 +979,7 @@ async def api_execute_task(body: MessageIn):
         rec_c = _pending_confirms.pop(cid, None)
         return bool(got and rec_c and rec_c.get("approved"))
 
-    goal = build_freeform_goal(task)
+    goal = build_freeform_goal(task, context=context)
 
     async def gen():
         yield "data: " + json.dumps({"kind": "reasoning", "payload": f"Task: {task}"}) + "\n\n"
@@ -986,6 +999,20 @@ async def api_execute_task(body: MessageIn):
         result = await run
         _log_executor_run("freeform", task[:60], goal, result)
         _log_executor_transcript("freeform", task[:60], goal, result, transcript_events)
+        # Write the outcome BACK into the conversation so the next turn knows what was done (and the
+        # agent stops re-doing it). Merge into the trailing assistant turn to keep roles alternating.
+        if rec is not None:
+            outcome = ((result.get("summary") or "").strip() or "(no changes made)")[:600]
+            note = f"[Task done: {task[:80]} → {outcome}]"
+            hist = rec.setdefault("history", [])
+            if hist and hist[-1].get("role") == "assistant":
+                hist[-1]["content"] = str(hist[-1]["content"]) + "\n\n" + note
+            else:
+                hist.append({"role": "assistant", "content": note})
+            eid = placed_element_id(result.get("tool_calls", []))
+            if eid is not None:
+                rec["last_element_id"] = eid
+            _save_history()
         yield "data: " + json.dumps({"kind": "final", "payload": {
             "done": result.get("done"), "summary": result.get("summary"),
             "attempts": result.get("attempts")}}) + "\n\n"
@@ -1693,7 +1720,7 @@ async function runTask(taskText){
   };
   try{
     const resp = await fetch('/api/execute-task', {
-      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text: taskText})
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(withPid({text: taskText}))
     });
     const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
     while(true){
