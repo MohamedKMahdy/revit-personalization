@@ -113,6 +113,32 @@ def test_log_understanding_appends(tmp_path):
     assert len(rows) == 2 and rows[0]["routine_id"] == "r1" and rows[1]["status"] == "corrected"
 
 
+# ── reflection: cross-routine generalization into the user prior (Stage 4) ──────────
+def test_reflect_promotes_understanding_confirmed_across_routines(tmp_path, monkeypatch):
+    monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "m.json")
+    monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
+    mem = pm.load()
+    for rid in ("r1", "r2"):
+        pm.record_understanding(mem, rid, [{"key": "rule:Mark",
+                                            "statement": "You number Mark per level — each level restarts its own sequence.",
+                                            "kind": "rule"}])
+        pm.confirm_understanding(mem, rid, "rule:Mark", True)
+    added = pm.reflect(mem)
+    assert len(added) == 1 and "per context" in added[0]
+    # the generalization is now a user-profile note -> flows into EVERY routine's prompt
+    assert "per context" in pm.user_block(mem)
+    assert pm.reflect(mem) == []                                 # idempotent
+
+
+def test_reflect_needs_multiple_routines(tmp_path, monkeypatch):
+    monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "m.json")
+    monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
+    mem = pm.load()
+    pm.record_understanding(mem, "r1", [{"key": "rule:Mark", "statement": "You number Mark sequentially.", "kind": "rule"}])
+    pm.confirm_understanding(mem, "r1", "rule:Mark", True)
+    assert pm.reflect(mem) == []                                 # one routine -> no generalization
+
+
 # ── endpoints ───────────────────────────────────────────────────────────────────────
 @pytest.fixture
 def client(tmp_path, monkeypatch):

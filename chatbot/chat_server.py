@@ -1286,12 +1286,16 @@ async def api_understanding_confirm(body: UnderstandingConfirmIn):
     mem = pm.load()
     status = pm.confirm_understanding(mem, pid, key, bool(body.accepted),
                                       (body.correction or "").strip(), rec.get("label", ""))
+    generalized = pm.reflect(mem)            # promote cross-routine understanding into the user prior
     pm.save(mem)
     from orchestrator.understanding import log_understanding
     from datetime import date
-    log_understanding(pid, [{"key": key, "status": status, "accepted": bool(body.accepted),
-                             "correction": (body.correction or "").strip(), "date": date.today().isoformat()}])
-    return {"ok": True, "status": status}
+    today = date.today().isoformat()
+    ledger = [{"key": key, "status": status, "accepted": bool(body.accepted),
+               "correction": (body.correction or "").strip(), "date": today}]
+    ledger += [{"key": "generalization", "status": "generalized", "note": g, "date": today} for g in generalized]
+    log_understanding(pid, ledger)
+    return {"ok": True, "status": status, "generalized": generalized}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

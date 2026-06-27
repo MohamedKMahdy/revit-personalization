@@ -371,6 +371,48 @@ def understanding_block(mem: dict, routine_id: str) -> str:
             + "\n- ".join(lines) + "\n")
 
 
+# ── Reflection: consolidate per-routine understanding into a per-user prior (Stage 4) ──
+# The "learning to learn" loop: understanding CONFIRMED across several of a user's routines is promoted
+# to a user-profile note, so a brand-new routine inherits the prior (cross-routine transfer) instead of
+# re-discovering it. Deterministic, run offline (not on the executor hot path).
+MIN_ROUTINES_FOR_GENERALIZATION = 2
+
+
+def _understanding_signature(statement: str) -> str | None:
+    """Normalize a confirmed understanding statement to a reusable, profile-level pattern, or None."""
+    s = (statement or "").lower()
+    if "per " in s and ("number" in s or "restart" in s):
+        return "number elements per context (e.g. per level or room)"
+    if "in steps of" in s:
+        return "number elements in fixed steps"
+    if "sequentially" in s:
+        return "number elements sequentially"
+    if "set " in s and " by " in s:
+        return "set values conditionally on a property"
+    return None
+
+
+def reflect(mem: dict) -> list:
+    """Promote understanding confirmed/corrected across >= MIN_ROUTINES_FOR_GENERALIZATION routines
+    into user-profile notes (rendered for every routine by user_block). Returns the notes newly added."""
+    tally: dict = {}
+    for rid, r in (mem.get("routines", {}) or {}).items():
+        for e in (r.get("understanding") or {}).values():
+            if e.get("status") in ("confirmed", "corrected"):
+                sig = _understanding_signature(e.get("correction") or e.get("statement"))
+                if sig:
+                    tally.setdefault(sig, set()).add(rid)
+    added: list = []
+    notes = mem.setdefault("user", {}).setdefault("notes", [])
+    for sig, rids in tally.items():
+        if len(rids) >= MIN_ROUTINES_FOR_GENERALIZATION:
+            note = f"Across your routines, you consistently {sig} — apply this to new routines too."
+            if note not in notes:
+                notes.append(note)
+                added.append(note)
+    return added
+
+
 # ── Rendering into context ────────────────────────────────────────────────────────
 def user_block(mem: dict) -> str:
     """The per-user profile rendered for a system prompt (used by the chat + executor)."""

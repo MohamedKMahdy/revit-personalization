@@ -9,6 +9,7 @@ Comparisons:
   A2  Compound recovery     — v0.3 vs v0.2: multi-element routines captured (wall->door->tag)
   A3  Proactive prediction  — precision@1 of next-action prediction (reactive -> proactive)
   A4  Richer-goal coverage  — flat vs richer build_goal: structures the goal can express
+  A5  Understanding vs detection — held-out generalization: induce-the-rule vs literal replay
 
 Run:
     python eval/ablations.py            # synthetic + detected routines
@@ -31,6 +32,7 @@ from detector import make_detector                          # noqa: E402
 from orchestrator.executor_agent import build_goal          # noqa: E402
 from process_acceleration import acceleration_for           # noqa: E402
 from prediction_eval import evaluate as eval_prediction     # noqa: E402
+import understanding_eval                                    # noqa: E402
 
 RESULTS_DIR = _ROOT / "results"
 CSV_PATH = RESULTS_DIR / "ablations.csv"
@@ -100,8 +102,16 @@ def run_ablations(routines=None) -> dict:
           "richer_expresses_conditionals": "ONLY IF" in g_rich,
           "richer_expresses_compounds": "SEVERAL related elements" in g_rich}
 
+    # A5 — understanding vs detection: held-out generalization (induce-the-rule vs literal replay)
+    u = understanding_eval.summary(understanding_eval.run())
+    a5 = {"understanding_supported": f"{u['understanding_supported'][0]}/{u['understanding_supported'][1]}",
+          "detection_supported": f"{u['detection_supported'][0]}/{u['detection_supported'][1]}",
+          "understanding_honesty": f"{u['understanding_honesty'][0]}/{u['understanding_honesty'][1]}",
+          "detection_honesty": f"{u['detection_honesty'][0]}/{u['detection_honesty'][1]}"}
+
     return {"A1_process_acceleration": a1, "A2_compound_recovery": a2,
-            "A3_proactive_prediction": a3, "A4_richer_goal_coverage": a4}
+            "A3_proactive_prediction": a3, "A4_richer_goal_coverage": a4,
+            "A5_understanding_vs_detection": a5}
 
 
 def main() -> int:
@@ -111,8 +121,9 @@ def main() -> int:
     args = ap.parse_args()
 
     res = run_ablations()
-    a1, a2, a3, a4 = (res["A1_process_acceleration"], res["A2_compound_recovery"],
-                      res["A3_proactive_prediction"], res["A4_richer_goal_coverage"])
+    a1, a2, a3, a4, a5 = (res["A1_process_acceleration"], res["A2_compound_recovery"],
+                          res["A3_proactive_prediction"], res["A4_richer_goal_coverage"],
+                          res["A5_understanding_vs_detection"])
     print("\n================  THESIS ABLATIONS (deterministic, $0)  ================\n")
     print(f"A1  Process acceleration : {a1['manual_actions']:.0f} manual -> {a1['assisted_actions']:.0f} "
           f"assisted actions = {a1['reduction_pct']}% reduction  ({a1['routines']} routines)")
@@ -122,6 +133,9 @@ def main() -> int:
     print(f"A4  Richer-goal coverage : flat expresses loops={a4['flat_expresses_loops']}; "
           f"richer loops={a4['richer_expresses_loops']}, conditionals={a4['richer_expresses_conditionals']}, "
           f"compounds={a4['richer_expresses_compounds']}")
+    print(f"A5  Understanding vs det. : held-out generalization {a5['understanding_supported']} (understand) "
+          f"vs {a5['detection_supported']} (literal replay); honesty {a5['understanding_honesty']} vs "
+          f"{a5['detection_honesty']}")
     print()
 
     if args.csv:

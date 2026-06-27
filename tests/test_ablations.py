@@ -16,8 +16,9 @@ from ablations import run_ablations   # noqa: E402
 
 def test_ablations_invariants():
     res = run_ablations()
-    a1, a2, a3, a4 = (res["A1_process_acceleration"], res["A2_compound_recovery"],
-                      res["A3_proactive_prediction"], res["A4_richer_goal_coverage"])
+    a1, a2, a3, a4, a5 = (res["A1_process_acceleration"], res["A2_compound_recovery"],
+                          res["A3_proactive_prediction"], res["A4_richer_goal_coverage"],
+                          res["A5_understanding_vs_detection"])
 
     # A1: assisting saves user effort (assisted < manual)
     assert a1["assisted_actions"] < a1["manual_actions"] and a1["reduction_pct"] > 0
@@ -31,3 +32,7 @@ def test_ablations_invariants():
     # A4: the richer goal expresses structure the flat one cannot
     assert a4["flat_expresses_loops"] is False
     assert a4["richer_expresses_loops"] and a4["richer_expresses_conditionals"] and a4["richer_expresses_compounds"]
+
+    # A5: understanding generalizes to held-out cases where literal replay can't, and stays honest
+    assert a5["understanding_supported"] == "4/4" and a5["detection_supported"] == "0/4"
+    assert a5["understanding_honesty"] == "3/3"
