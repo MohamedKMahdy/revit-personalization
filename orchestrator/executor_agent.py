@@ -995,6 +995,24 @@ def build_goal(motif: dict, location: dict | None = None, param_values: dict | N
     return "\n".join(lines)
 
 
+def build_freeform_goal(task: str) -> str:
+    """Wrap a free-form natural-language request as an executor goal — the conversational path that
+    handles ARBITRARY tasks and model questions, not just learned routines. The executor already has
+    the full read/query/create tool surface, so this just frames the request + the ground-first and
+    do-only-what-was-asked discipline."""
+    return (
+        "The user asked you to do the following in their LIVE Revit model:\n\n"
+        f"    {task.strip()}\n\n"
+        "Carry it out with the tools. GROUND yourself first with the read/query tools "
+        "(get_active_view, inspect_model, get_selected_elements, get_available_family_types, "
+        "ai_element_filter, get_element_info/parameters) before changing anything. If this is purely a "
+        "QUESTION about the model, answer it from the query tools and DO NOT modify anything. If it "
+        "needs changes, do them step by step, self-correcting on errors, and touch ONLY what was "
+        "asked — never unrelated elements. When finished, reply with a short plain-text summary of "
+        "what you did or what you found."
+    )
+
+
 def _load_api_key() -> None:
     if os.environ.get("ANTHROPIC_API_KEY"):
         return

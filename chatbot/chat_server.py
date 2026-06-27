@@ -47,7 +47,8 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
 from orchestrator.executor_agent import (run_executor, build_goal, required_steps_from_motif,
-                                          placed_element_id, resolve_routine_values, choose_start_model)
+                                          placed_element_id, resolve_routine_values, choose_start_model,
+                                          build_freeform_goal)
 from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -126,7 +127,7 @@ def _lock_for(pid: str) -> asyncio.Lock:
 
 _TOKEN_RE = re.compile(
     r"##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##"
-    r"|##REMEMBER:[^#]*##|##PARAM:[^#]*##"
+    r"|##REMEMBER:[^#]*##|##PARAM:[^#]*##|##TASK:[^#]*##"
 )
 
 # Pending API-fallback confirmations: confirm_id -> {"event": threading.Event, "approved": bool|None}.
@@ -389,9 +390,22 @@ def _user_memory_prefix() -> str:
     return (block + "\n") if block else ""
 
 
+_FREEFORM_SYSTEM = """
+
+FREE-FORM TASKS & MODEL QUESTIONS (beyond the learned routine):
+If the user asks you to DO any modeling task, or ASKS a question about the live model, that is NOT
+just running the loaded routine — e.g. "how many fire doors on level 2?", "renumber the doors on L2
+by room", "select all walls thinner than 100mm" — emit a single token on its own line:
+    ##TASK: <one clear, self-contained instruction the executor can carry out>##
+then briefly acknowledge in plain language. The agentic executor will carry it out with the full
+Revit tool surface: read-only questions are answered WITHOUT changing the model; any change still
+passes the user-confirmation gate. Do NOT emit ##TASK## for a request that the loaded routine's
+##EXECUTE## already covers. Keep the instruction inside ##TASK:...## specific and unambiguous."""
+
+
 def _build_system(rec: dict | None) -> str:
     if not rec:
-        return _user_memory_prefix() + _NO_PATTERN_SYSTEM
+        return _user_memory_prefix() + _NO_PATTERN_SYSTEM + _FREEFORM_SYSTEM
 
     label = rec.get("label", "Unnamed Routine")
     count = rec.get("count", 0)
@@ -426,8 +440,8 @@ def _build_system(rec: dict | None) -> str:
     else:
         post_exec = ""
 
-    return _user_memory_prefix() + _SYSTEM_TEMPLATE.format(
-        summary=summary, steps=steps_str, post_exec_context=post_exec)
+    return (_user_memory_prefix() + _SYSTEM_TEMPLATE.format(
+        summary=summary, steps=steps_str, post_exec_context=post_exec) + _FREEFORM_SYSTEM)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -491,9 +505,16 @@ async def _stream(rec: dict, user_text: str | None = None) -> AsyncIterator[str]
                 "z": float(loc_match.group(3)),
             }
 
+        # Free-form task/question (##TASK:<nl>##) → run the agentic executor on an arbitrary request,
+        # not a learned routine (the conversational-agent path).
+        task_match = re.search(r"##TASK:([^#]*)##", full)
+        if task_match:
+            rec["pending_task"] = task_match.group(1).strip()
+
         # Signal completion + any action token
         action = None
         if   "##EXECUTE##"  in full: action = "execute"
+        elif task_match:             action = "task"
         elif "##DISMISS##"  in full: action = "dismiss"; rec["status"] = "dismissed"
         elif "##ISOLATE##"  in full: action = "isolate"
         elif "##ZOOM##"     in full: action = "zoom"
@@ -910,6 +931,89 @@ async def api_execute_confirm(body: ConfirmIn):
     return {"ok": True, "approved": bool(body.approved)}
 
 
+@app.post("/api/execute-task")
+async def api_execute_task(body: MessageIn):
+    """Free-form conversational execution (Pillar C): run ANY natural-language task or model question
+    through the agentic executor — not a learned routine. Read-only questions are answered via the
+    query tools without changing the model; writes still pass the confirmation gate. Streams the
+    executor's reasoning/tool/result over SSE, exactly like /api/execute-smart."""
+    task = (body.text or "").strip()
+
+    async def _err(msg):
+        yield f"data: {json.dumps({'kind': 'error', 'payload': msg})}\n\n"
+        yield f"data: {json.dumps({'kind': 'final', 'payload': {'done': False, 'summary': msg}})}\n\n"
+
+    if not task:
+        return StreamingResponse(_err("No task given"), media_type="text/event-stream")
+
+    memory_block = _user_memory_prefix()          # user profile context (no routine)
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    transcript_events: list = []
+
+    def on_event(kind, payload):
+        transcript_events.append({"kind": kind, "payload": payload})
+        loop.call_soon_threadsafe(queue.put_nowait, {"kind": kind, "payload": payload})
+
+    def confirm_fn(name, args):
+        cid = _next_confirm_id()
+        ev = threading.Event()
+        _pending_confirms[cid] = {"event": ev, "approved": None}
+        loop.call_soon_threadsafe(queue.put_nowait, {"kind": "confirm", "payload": {
+            "id": cid, "tool": name, "purpose": args.get("purpose", ""),
+            "code": args.get("code", ""), "mode": args.get("transactionMode", "auto")}})
+        got = ev.wait(timeout=CONFIRM_TIMEOUT_S)
+        rec_c = _pending_confirms.pop(cid, None)
+        return bool(got and rec_c and rec_c.get("approved"))
+
+    goal = build_freeform_goal(task)
+
+    async def gen():
+        yield "data: " + json.dumps({"kind": "reasoning", "payload": f"Task: {task}"}) + "\n\n"
+        run = asyncio.create_task(asyncio.to_thread(
+            run_executor, goal, on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block))
+        idle = 0
+        while not (run.done() and queue.empty()):
+            try:
+                ev = await asyncio.wait_for(queue.get(), timeout=0.25)
+                yield f"data: {json.dumps(ev)}\n\n"
+                idle = 0
+            except asyncio.TimeoutError:
+                idle += 1
+                if idle % 20 == 0:
+                    yield ": ping\n\n"
+                continue
+        result = await run
+        _log_executor_run("freeform", task[:60], goal, result)
+        _log_executor_transcript("freeform", task[:60], goal, result, transcript_events)
+        yield "data: " + json.dumps({"kind": "final", "payload": {
+            "done": result.get("done"), "summary": result.get("summary"),
+            "attempts": result.get("attempts")}}) + "\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/predict")
+async def api_predict():
+    """Proactive next-action suggestion (Pillar B) for the in-progress episode, for the inline chip.
+    Deterministic prefix-match against the user's learned routines; null when nothing is in progress."""
+    try:
+        from predictor import predict_live
+        from mcp_server.log_reader import load_real_action_records, list_candidate_routines
+        records = await asyncio.to_thread(load_real_action_records)
+        routines = await asyncio.to_thread(list_candidate_routines)
+        p = predict_live(records, routines)
+    except Exception as exc:
+        return {"prediction": None, "error": str(exc)[:160]}
+    if not p:
+        return {"prediction": None}
+    return {"prediction": {
+        "routine_id": p.routine_id, "label": p.routine_label, "headline": p.headline,
+        "support": p.support, "confidence": p.confidence, "match": p.match,
+        "next_actions": p.next_actions}}
+
+
 # ── Per-user memory (what the assistant remembers about you) ───────────────────────
 @app.get("/api/memory")
 async def api_memory():
@@ -1177,6 +1281,7 @@ let _curId     = null;   // pattern currently shown in the chat
 let _activeId  = null;   // server's active pattern (from last poll)
 let _cache     = [];     // last patterns list
 let _knownIds  = new Set();
+let _lastUserText = '';  // the user's last chat message (used for free-form ##TASK## execution)
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 const chat   = () => document.getElementById('chat');
@@ -1189,7 +1294,7 @@ function esc(s){
     .replace(/\n/g,'<br>');
 }
 function stripTokens(s){
-  return s.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##|##REMEMBER:[^#]*##|##PARAM:[^#]*##/g,'').trim();
+  return s.replace(/##EXECUTE##|##DISMISS##|##ISOLATE##|##ZOOM##|##SELECT##|##PICK##|##LOCATION:[^#]*##|##REMEMBER:[^#]*##|##PARAM:[^#]*##|##TASK:[^#]*##/g,'').trim();
 }
 function withPid(body){ return Object.assign({pattern_id:_curId}, body||{}); }
 
@@ -1446,6 +1551,7 @@ async function consumeStream(resp){
 }
 function handleAction(action){
   if     (action === 'execute')  runExec();
+  else if(action === 'task')     runTask(_lastUserText);
   else if(action === 'dismiss')  runDismiss();
   else if(action === 'pick')     runPick();
   else if(action === 'isolate')  runAction('/api/isolate', 'Isolating element');
@@ -1549,6 +1655,52 @@ async function runExec(){
   loadMemory();     // the run may have taught the assistant new families/values
 }
 
+async function runTask(taskText){
+  // Free-form conversational execution (Pillar C): the assistant routed a request to ##TASK##, so run
+  // it through the agentic executor over /api/execute-task — same live transcript as Execute.
+  if(_executing) return;
+  if(!taskText){ unlockUI(); return; }
+  _busy = false; _executing = true;
+  freezeActions();
+  inp().disabled = false; document.getElementById('btn-send').disabled = false;
+  setStatus('⟳ Working on your request — self-correcting on errors…', 'info');
+  const handle = (line)=>{
+    if(!line.startsWith('data: ')) return;
+    let ev; try{ ev = JSON.parse(line.slice(6)); } catch{ return; }
+    const k = ev.kind, p = ev.payload;
+    if(k === 'reasoning'){ if(p && String(p).trim()) addBubble('bot', p); }
+    else if(k === 'confirm'){ addConfirmCard(p); setStatus('⏸ Waiting for your approval to run Revit API code…', 'info'); }
+    else if(k === 'tool'){ setStatus(`🔧 ${p.name}…`, 'info'); }
+    else if(k === 'result'){
+      const ok = p.result && p.result.success;
+      setStatus(`${ok?'✓':'⟳'} ${p.name}: ${String((p.result&&p.result.message)||'').slice(0,70)}`, ok?'success':'info');
+    }
+    else if(k === 'error'){ setStatus(`✗ ${p}`, 'error'); }
+    else if(k === 'final'){
+      if(p.done){ setStatus('✓ Done', 'success'); }
+      else { setStatus(`✗ Stopped: ${String(p.summary||'could not finish').slice(0,90)}`, 'error'); }
+      if(p.summary) addBubble('bot', p.summary);
+    }
+  };
+  try{
+    const resp = await fetch('/api/execute-task', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text: taskText})
+    });
+    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while(true){
+      const {done, value} = await reader.read(); if(done) break;
+      buf += dec.decode(value, {stream:true}); const parts = buf.split('\n'); buf = parts.pop();
+      for(const line of parts) handle(line);
+    }
+    if(buf) handle(buf);
+  } catch(e){
+    setStatus(`✗ ${e.message}`, 'error');
+    addBubble('bot', `Could not reach the server: ${e.message}`);
+  }
+  unfreezeActions();
+  loadMemory();
+}
+
 async function runAction(endpoint, label){
   setStatus(`⟳ ${label}…`, 'info');
   try{
@@ -1581,6 +1733,7 @@ function send(){
   if(!text) return;
   inp().value = '';
   clearStatus();
+  _lastUserText = text;            // remember it in case the assistant routes it to a free-form ##TASK##
   addBubble('usr', text);
   streamFrom('/api/chat', {text});
 }
