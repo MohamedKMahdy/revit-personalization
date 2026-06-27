@@ -29,6 +29,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
     monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "users" / "u" / "memory.json")
     monkeypatch.setattr(pm, "LEGACY_PATH", tmp_path / "none.json")
+    # isolate the executor logs so tests never pollute the real executor_runs/transcripts files
+    monkeypatch.setattr(cs, "_EXECUTOR_LOG", tmp_path / "runs.jsonl")
+    monkeypatch.setattr(cs, "_EXECUTOR_TRANSCRIPT", tmp_path / "transcripts.jsonl")
     return TestClient(cs.app)
 
 
