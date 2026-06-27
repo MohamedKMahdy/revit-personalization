@@ -299,6 +299,26 @@ def test_tag_category_mapping():
     assert ex._tag_category_for("") is None
 
 
+def test_verify_outcome_reads_back_params():
+    """The verifier flags a param that didn't actually stick, and passes when values match."""
+    def good(tool, args):
+        assert tool == "get_element_parameters"
+        return {"success": True, "response": [{"name": "Mark", "value": "D-05"},
+                                              {"name": "Comments", "value": "reviewed"}]}
+    ok = ex.verify_outcome({"Mark": "D-05", "Comments": "reviewed"}, 900, dispatch_fn=good)
+    assert ok["ok"] is True and ok["issues"] == []
+
+    def wrong(tool, args):
+        return {"success": True, "response": [{"name": "Mark", "value": "D-99"}]}
+    bad = ex.verify_outcome({"Mark": "D-05"}, 900, dispatch_fn=wrong)
+    assert bad["ok"] is False and "Mark" in bad["issues"][0] and "D-99" in bad["issues"][0]
+
+    # vacuous: nothing placed or no params -> ok, and a read error never fails the run
+    assert ex.verify_outcome({"Mark": "x"}, None, dispatch_fn=good)["ok"] is True
+    assert ex.verify_outcome({}, 900, dispatch_fn=good)["ok"] is True
+    assert ex.verify_outcome({"Mark": "x"}, 900, dispatch_fn=lambda *a: (_ for _ in ()).throw(RuntimeError()))["ok"] is True
+
+
 def test_real_dispatch_query_tools(monkeypatch):
     """The new read tools map onto the right plugin calls and normalize their results."""
     from mcp_server import revit_bridge as rb

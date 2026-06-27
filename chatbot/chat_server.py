@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
 from orchestrator.executor_agent import (run_executor, build_goal, required_steps_from_motif,
                                           placed_element_id, resolve_routine_values, choose_start_model,
-                                          build_freeform_goal, real_dispatch)
+                                          build_freeform_goal, real_dispatch, verify_outcome)
 from orchestrator import compiled_skill
 from orchestrator import project_memory as pm
 
@@ -985,6 +985,22 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         if result.get("done"):
             rec["status"] = "executed"
         _save_history()
+
+        # OUTCOME VERIFIER: read the params BACK and confirm they actually stuck; on a mismatch, one
+        # deterministic repair (re-set the off params) + re-verify, all reported in the stream.
+        if result.get("done") and eid is not None and param_values:
+            v = await asyncio.to_thread(verify_outcome, param_values, eid)
+            if not v["ok"]:
+                yield ("data: " + json.dumps({"kind": "reasoning",
+                       "payload": "Verifying outcome — some values didn't stick: " + "; ".join(v["issues"])
+                       + ". Repairing…"}) + "\n\n")
+                for nm in [n for n, val in param_values.items() if str(v["actual"].get(n)) != str(val)]:
+                    await asyncio.to_thread(real_dispatch, "set_parameter",
+                                            {"element_id": eid, "name": nm, "value": str(param_values[nm])})
+                v2 = await asyncio.to_thread(verify_outcome, param_values, eid)
+                yield ("data: " + json.dumps({"kind": "result", "payload": {"name": "verify_outcome",
+                       "result": {"success": v2["ok"], "message": "all values verified" if v2["ok"]
+                                  else "still off: " + "; ".join(v2["issues"])}}}) + "\n\n")
 
         _goal_text = build_goal(motif, location, param_values)
         _log_executor_run(routine_id, label, _goal_text, result)

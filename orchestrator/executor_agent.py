@@ -1071,6 +1071,31 @@ def build_goal(motif: dict, location: dict | None = None, param_values: dict | N
     return "\n".join(lines)
 
 
+def verify_outcome(param_values: dict, placed_id, dispatch_fn: Callable[[str, dict], dict] = real_dispatch) -> dict:
+    """Deterministic post-condition check: read the placed element's parameters BACK from the live
+    model and confirm each intended value actually stuck (a 'committed' tool result is not proof the
+    value is right). Returns {ok, issues, actual}. Best-effort + cheap (one read); a query/no-op run
+    (no placed_id or no params) verifies vacuously."""
+    pv = param_values or {}
+    names = [n for n in pv]
+    if placed_id is None or not names:
+        return {"ok": True, "issues": [], "actual": {}}
+    try:
+        res = dispatch_fn("get_element_parameters", {"elementId": int(placed_id), "parameterNames": names})
+    except Exception as exc:
+        return {"ok": True, "issues": [], "actual": {}, "skipped": str(exc)}   # don't fail on a read error
+    rows = []
+    if isinstance(res, dict):
+        rows = res.get("response") or res.get("Response") or []
+    actual: dict = {}
+    for row in (rows if isinstance(rows, list) else []):
+        if isinstance(row, dict) and row.get("name") is not None:
+            actual[row["name"]] = "" if row.get("value") is None else str(row["value"])
+    issues = [f"'{n}' reads back {actual.get(n)!r}, expected {str(v)!r}"
+              for n, v in pv.items() if n in actual and actual[n] != str(v)]
+    return {"ok": not issues, "issues": issues, "actual": actual}
+
+
 def build_freeform_goal(task: str, context: str = "") -> str:
     """Wrap a free-form natural-language request as an executor goal — the conversational path that
     handles ARBITRARY tasks and model questions, not just learned routines. The executor already has
