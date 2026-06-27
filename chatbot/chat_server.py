@@ -174,6 +174,50 @@ def _log_executor_transcript(routine_id: str, label: str, goal: str, result: dic
         pass
 
 
+def _category_from_routine(routine_id: str, motif: dict) -> str | None:
+    """The OST_ category for a routine — from the routine id ('routine_Doors_...' -> OST_Doors), else
+    the motif's place step. Used to scope the existing-values gather."""
+    parts = (routine_id or "").split("_")
+    if len(parts) >= 2 and parts[0] == "routine" and parts[1]:
+        return "OST_" + parts[1]
+    for s in (motif.get("steps") or []):
+        c = s.get("element_category")
+        if c:
+            return c if str(c).startswith("OST_") else "OST_" + str(c)
+    return None
+
+
+def _existing_param_values(routine_id: str, motif: dict, param_names: list) -> dict:
+    """Best-effort: the values already present in the LIVE model for the given params, so the resolver
+    won't assign a duplicate. Bounded (<=50 elements, one category) + degrades to {} on any failure.
+    Runs sync (call it via asyncio.to_thread) — it makes several blocking plugin round-trips."""
+    names = [p for p in (param_names or []) if p]
+    cat = _category_from_routine(routine_id, motif)
+    if not names or not cat:
+        return {}
+    try:
+        from mcp_server import revit_bridge as rb
+        r = rb._call_plugin("ai_element_filter", {"data": {"filterCategory": cat,
+            "includeInstances": True, "includeTypes": False, "maxElements": 50}})
+        resp = r.get("Response") if isinstance(r, dict) else None
+        ids = []
+        for e in (resp or []):
+            if isinstance(e, dict):
+                eid = e.get("Id") or e.get("ElementId") or (e.get("Properties") or {}).get("ElementId")
+                if eid is not None:
+                    ids.append(eid)
+        out = {p: set() for p in names}
+        for eid in ids[:50]:
+            pr = rb._call_plugin("get_element_parameters", {"elementId": int(eid), "parameterNames": names})
+            rows = pr.get("Response") if isinstance(pr, dict) else (pr if isinstance(pr, list) else None)
+            for row in (rows or []):
+                if isinstance(row, dict) and row.get("name") in out and row.get("value") not in (None, ""):
+                    out[row["name"]].add(str(row["value"]))
+        return out
+    except Exception:
+        return {}
+
+
 def _log_executor_run(routine_id: str, label: str, goal: str, result: dict) -> None:
     """Append a compact record of an agentic execution run so it can be inspected on disk.
     Each step logs the tool, success, and (for the Revit API fallback) its purpose/mode — so an
@@ -827,7 +871,13 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
     # Resolve the value to use for each parameter: constants as recorded, variables (e.g. Mark) as
     # the NEXT in sequence — from the value we last set (memory), else the highest in the examples.
     _last_vals = ((_mem.get("routines", {}) or {}).get(routine_id, {}) or {}).get("last_values", {})
-    param_values = resolve_routine_values(motif, rec.get("examples", []), _last_vals)
+    # Gather values already in the live model for the routine's VARIABLE params so we don't assign a
+    # duplicate Mark (best-effort, off-thread so it doesn't block the event loop; degrades to {}).
+    _var_params = [s.get("param_name") for s in motif.get("steps", [])
+                   if s.get("param_name") and ((s.get("param_value_type") or "").lower() == "variable"
+                                               or s.get("param_value") in (None, ""))]
+    _existing = await asyncio.to_thread(_existing_param_values, routine_id, motif, _var_params)
+    param_values = resolve_routine_values(motif, rec.get("examples", []), _last_vals, existing_values=_existing)
     param_values.update(rec.get("param_overrides") or {})   # a value the user typed in chat wins
 
     # COST: for a memory-warm, simple routine on a paid ceiling, start cheap (Haiku) and escalate to

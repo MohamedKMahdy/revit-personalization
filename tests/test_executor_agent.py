@@ -551,6 +551,24 @@ def test_resolve_routine_values_constants_and_sequences():
     assert vals2["Mark"] == "D-104" and vals2["Width"] == "900"
 
 
+def test_resolve_routine_values_skips_existing_marks():
+    """A computed variable value must not collide with one already in the live model (no duplicate Mark)."""
+    motif = {"steps": [{"action_type": "SetParam", "param_name": "Mark",
+                        "param_value": None, "param_value_type": "variable"}]}
+    # last set D-01 -> next is D-02, but D-02 & D-03 already exist -> advance to D-04
+    v = ex.resolve_routine_values(motif, examples=[], last_values={"Mark": "D-01"},
+                                  existing_values={"Mark": {"D-02", "D-03"}})
+    assert v["Mark"] == "D-04"
+    # no existing -> normal next-in-sequence (unchanged behaviour)
+    assert ex.resolve_routine_values(motif, last_values={"Mark": "D-01"})["Mark"] == "D-02"
+    # a non-incrementable free value with a collision is left as-is (best effort, no infinite loop)
+    motif2 = {"steps": [{"action_type": "SetParam", "param_name": "Note",
+                         "param_value": None, "param_value_type": "variable"}]}
+    out = ex.resolve_routine_values(motif2, examples=[{"actions": [{"param_name": "Note", "param_value_after": "ABC"}]}],
+                                    existing_values={"Note": {"ABD"}})
+    assert "Note" not in out or out["Note"]    # no crash; ABC has no trailing number to advance
+
+
 def test_goal_and_required_use_resolved_values():
     motif = {"name": "Door", "steps": [
         {"action_type": "Place", "family_name": "M_Door"},

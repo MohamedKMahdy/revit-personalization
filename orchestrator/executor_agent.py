@@ -600,12 +600,18 @@ def _max_in_sequence(values: list) -> str | None:
 
 
 def resolve_routine_values(motif: dict, examples: list | None = None,
-                           last_values: dict | None = None) -> dict:
+                           last_values: dict | None = None,
+                           existing_values: dict | None = None) -> dict:
     """Decide the value to USE for each parameter the routine sets. A constant value stays; a
     variable one (e.g. Mark) becomes the NEXT in its observed sequence — incremented from the value
-    we last set (project memory), or from the highest value seen in the recorded examples."""
+    we last set (project memory), or from the highest value seen in the recorded examples.
+
+    `existing_values` = {param_name: set(values already in the LIVE model)}: a computed variable value
+    is advanced past any value already in use, so we never silently assign a DUPLICATE Mark (Revit
+    allows duplicate marks but flags them as a warning — and a BIM reviewer will catch it)."""
     examples = examples or []
     last_values = last_values or {}
+    existing = existing_values or {}
 
     def _clean(v):
         return None if v is None or str(v).strip().lower() in ("", "none", "null") else v
@@ -629,6 +635,13 @@ def resolve_routine_values(motif: dict, examples: list | None = None,
                     if a.get("param_name") == pn]
             nxt = next_in_sequence(_max_in_sequence([v for v in seen if v is not None]))
         if nxt is not None:
+            used = {str(v) for v in (existing.get(pn) or set())}
+            guard = 0
+            while str(nxt) in used and guard < 1000:    # advance past values already in the model
+                adv = next_in_sequence(nxt)
+                if adv is None or adv == nxt:
+                    break                               # cannot advance further — best effort
+                nxt, guard = adv, guard + 1
             out[pn] = nxt
     return out
 
