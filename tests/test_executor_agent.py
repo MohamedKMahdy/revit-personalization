@@ -546,6 +546,73 @@ def test_required_steps_and_goal_read_real_motif_fields():
     assert "M_Window Tag" in goal and "Mark" in goal and "1002" in goal
 
 
+def test_build_goal_flat_motif_unchanged():
+    """Backward compat: a flat motif renders exactly as before (no richer-field leakage)."""
+    motif = {"name": "Door", "steps": [
+        {"action_type": "Place", "family_name": "M_Door"},
+        {"action_type": "SetParam", "param_name": "Mark", "param_value": "D-1"},
+        {"action_type": "Tag", "tag_family_name": "M_Door Tag"},
+    ]}
+    g = ex.build_goal(motif)
+    assert "Place the family 'M_Door'." in g
+    assert "Set parameter 'Mark' = 'D-1' on the placed element" in g
+    assert "Tag the placed element with 'M_Door Tag'." in g
+    assert "For EACH" not in g and "ONLY IF" not in g and "SEVERAL related elements" not in g
+
+
+def test_build_goal_renders_loop():
+    """A repeat spec becomes a 'for each ... advancing the index' clause."""
+    motif = {"name": "Doors along wall", "steps": [
+        {"action_type": "Place", "family_name": "M_Door",
+         "repeat": {"over": "selected wall", "spacing_mm": 2000, "index_param": "Mark", "mark_expr": "D-{i:02}"}},
+    ]}
+    g = ex.build_goal(motif)
+    assert "For EACH selected wall" in g and "2000 mm apart" in g
+    assert "Mark = D-{i:02}" in g
+    assert "honour each step's LOOP" in g       # richer-routine instruction added
+
+
+def test_build_goal_renders_conditional_and_value_expr():
+    motif = {"name": "Conditional frame", "steps": [
+        {"action_type": "SetParam", "param_name": "Frame", "value_expr": "'Wide' if width>1500 else 'Standard'",
+         "condition": "width>1500"},
+    ]}
+    g = ex.build_goal(motif)
+    assert "ONLY IF width>1500" in g
+    assert "COMPUTED value" in g and "width>1500" in g
+
+
+def test_build_goal_renders_compound_elements_and_roles():
+    """Multi-element compound: preamble names the roles; steps refer to them by role + host."""
+    motif = {"name": "Wall+Door+Tag", "elements": [
+        {"role": "wall", "family": "Basic Wall"},
+        {"role": "door", "family": "M_Door", "host": "wall"},
+    ], "steps": [
+        {"action_type": "Place", "family_name": "Basic Wall", "element_role": "wall"},
+        {"action_type": "Place", "family_name": "M_Door", "element_role": "door", "host_role": "wall"},
+        {"action_type": "SetParam", "param_name": "Mark", "param_value": "D-1", "element_role": "door"},
+        {"action_type": "Tag", "tag_family_name": "M_Door Tag", "element_role": "door"},
+    ]}
+    g = ex.build_goal(motif)
+    assert "SEVERAL related elements" in g and "'door': family 'M_Door', hosted on the 'wall'." in g
+    assert "(call it the 'door')" in g and "hosted on the 'wall' created in this routine" in g
+    assert "on the 'door'" in g and "Tag the 'door' with 'M_Door Tag'." in g
+
+
+def test_richer_motif_schema_round_trips():
+    """The new MotifStep/Motif fields are optional + persist (additive, backward-compatible)."""
+    from shared.schemas import Motif, MotifStep
+    m = Motif(name="x", description="d", workflow_type="loop",
+              elements=[{"role": "door", "family": "M_Door", "host": "wall"}],
+              steps=[MotifStep(action_type="Place", family_name="M_Door", element_role="door",
+                               host_role="wall", repeat={"over": "wall", "spacing_mm": 2000})])
+    assert m.workflow_type == "loop" and m.elements[0]["host"] == "wall"
+    assert m.steps[0].repeat["spacing_mm"] == 2000 and m.steps[0].host_role == "wall"
+    # a bare flat step still defaults the new fields empty
+    flat = MotifStep(action_type="Tag")
+    assert flat.repeat is None and flat.condition == "" and flat.element_role == ""
+
+
 def test_placed_element_id_from_any_placement_tool():
     assert ex.placed_element_id(
         [{"name": "place_and_configure", "args": {}, "result": {"success": True, "response": [888]}}]) == 888

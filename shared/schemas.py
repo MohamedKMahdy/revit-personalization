@@ -119,25 +119,54 @@ class CandidateRoutine(BaseModel):
 
 
 class MotifStep(BaseModel):
-    """One step in a generalised routine motif."""
+    """One step in a generalised routine motif.
+
+    The base fields (action_type/family_name/param_name/...) describe a FLAT single-element step
+    — the original, still-default shape. The OPTIONAL fields below let a step express the richer
+    workflows people actually repeat; all default to empty so existing flat motifs are unchanged:
+      • element_role : which element of a multi-element routine this step acts on (e.g. "door"),
+                       so later steps can refer back to it instead of "the placed element".
+      • host_role    : for a hosted Place, the role of the element to host on (e.g. door host="wall").
+      • condition    : a guard, e.g. "width>1500" — the step only runs when it holds.
+      • value_expr   : a SetParam computed value instead of a literal, e.g. "2*height" or
+                       "room.number" (the agent evaluates it against the live model at runtime).
+      • repeat       : a loop spec, e.g. {"over":"selected_walls","spacing_mm":2000,
+                       "index_param":"Mark","mark_expr":"D-{i:02}"} or {"count":5} — run the step
+                       once per item, advancing the index expression each time.
+    """
     action_type:      ActionType = "Place"
     family_name:      str = ""   # Place only
     param_name:       str = ""   # SetParam only
     param_value:      Any = None # SetParam only; None = prompt user at runtime
     param_value_type: str = ""   # "constant" | "variable"
     tag_family_name:  str = ""   # Tag only
+    # ── Richer-workflow extensions (all optional; empty = today's flat behaviour) ──
+    element_role:     str = ""            # which element this step acts on (multi-element routines)
+    host_role:        str = ""            # role of the host element for a hosted Place
+    condition:        str = ""            # guard expression; step runs only if it holds
+    value_expr:       str = ""            # SetParam computed value (vs a literal param_value)
+    repeat:           dict | None = None  # loop spec (over / count / spacing_mm / index_param / mark_expr)
 
 
 class Motif(BaseModel):
     """
     Generalised representation of a routine — output of the Pattern Agent.
     Contains the invariant step structure and which parameters vary per use.
+
+    `workflow_type` + `elements` are optional richer-workflow metadata (default "linear" / empty,
+    preserving the original flat single-element motif):
+      • workflow_type : "linear" | "compound" | "loop" | "conditional" — how to read the steps.
+      • elements      : the distinct elements of a compound routine and their host relationships,
+                        e.g. [{"role":"wall","family":"Basic Wall"},
+                              {"role":"door","family":"M_Door...","host":"wall"}].
     """
     name:                 str
     description:          str
     steps:                list[MotifStep]
     preconditions:        list[str] = []
     parameters_to_prompt: list[str] = []  # param_names that the user must supply
+    workflow_type:        str = "linear"  # linear | compound | loop | conditional
+    elements:             list[dict] = [] # roles + host relationships for multi-element routines
 
 
 class ShortcutConfig(BaseModel):

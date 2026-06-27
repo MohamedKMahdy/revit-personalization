@@ -900,14 +900,42 @@ def run_executor(
             "nudged": completion_nudges, "escalated": escalated}
 
 
+def _render_repeat(rep: dict) -> str:
+    """Render a step's loop spec as an imperative 'for each ...' clause for the goal text."""
+    if rep.get("over"):
+        parts = [f"For EACH {rep['over']}"]
+    elif rep.get("count"):
+        parts = [f"Repeat {rep['count']} times"]
+    else:
+        parts = ["For each item"]
+    if rep.get("spacing_mm"):
+        parts.append(f"spaced {rep['spacing_mm']} mm apart along it")
+    if rep.get("mark_expr"):
+        parts.append(f"setting {rep.get('index_param', 'Mark')} = {rep['mark_expr']} (i = 1, 2, 3, ...)")
+    return ", ".join(parts) + ":"
+
+
 def build_goal(motif: dict, location: dict | None = None, param_values: dict | None = None) -> str:
     """Turn a detected routine (motif + steps) into the executor's goal prompt. Reads the Pattern
-    Agent's real step fields (action_type, family_name, tag_family_name, param_name/value).
-    `param_values` (from resolve_routine_values) supplies the concrete value for each parameter —
-    constants as recorded, variables as the next in sequence (e.g. Mark D-105 -> D-106)."""
+    Agent's real step fields (action_type, family_name, tag_family_name, param_name/value) AND the
+    richer-workflow extensions (element_role/host_role, condition, value_expr, repeat, plus
+    motif.elements for multi-element compounds) — flat motifs render exactly as before.
+    `param_values` (from resolve_routine_values) supplies the concrete value for each parameter."""
     steps = motif.get("steps", []) if isinstance(motif, dict) else []
     pvals = param_values or {}
     lines = [f"Routine: {motif.get('name', 'Detected routine')}", "Steps to reproduce IN ORDER:"]
+
+    # Compound preamble: name the distinct elements + their host relationships up front, so later
+    # steps can refer to each by role instead of the ambiguous "the placed element".
+    elements = motif.get("elements") or []
+    if elements:
+        lines.append("This routine creates SEVERAL related elements — track each by its role:")
+        for el in elements:
+            host = el.get("host")
+            lines.append(f"  - '{el.get('role', '?')}': family '{el.get('family') or el.get('family_name') or '?'}'"
+                         + (f", hosted on the '{host}'." if host else "."))
+        lines.append("Steps:")
+
     for i, s in enumerate(steps, 1):
         a = (s.get("action_type") or s.get("action") or "").strip()
         al = a.lower()
@@ -915,19 +943,43 @@ def build_goal(motif: dict, location: dict | None = None, param_values: dict | N
         pn = s.get("param_name") or ""
         pv = pvals.get(pn, s.get("param_value")) if pn else None
         tagfam = s.get("tag_family_name") or ""
+        role = s.get("element_role") or ""
+        host_role = s.get("host_role") or ""
+        value_expr = s.get("value_expr") or ""
+        condition = s.get("condition") or ""
+        repeat = s.get("repeat") or None
+        target = f"the '{role}'" if role else "the placed element"
+
         if ("place" in al or "create" in al) and fam:
-            lines.append(f"  {i}. Place the family '{fam}'.")
+            base = f"Place the family '{fam}'"
+            if role:
+                base += f" (call it the '{role}')"
+            if host_role:
+                base += f", hosted on the '{host_role}' created in this routine"
+            base += "."
         elif "tag" in al:
-            lines.append(f"  {i}. Tag the placed element" + (f" with '{tagfam}'." if tagfam else "."))
+            base = f"Tag {target}" + (f" with '{tagfam}'." if tagfam else ".")
         elif pn:
-            if pv in (None, ""):
-                lines.append(f"  {i}. Set parameter '{pn}' on the placed element "
-                             "(value is provided at runtime — ask the user if you don't have it).")
+            if value_expr:
+                base = (f"Set parameter '{pn}' on {target} to the COMPUTED value: {value_expr} "
+                        "(evaluate it against the live model).")
+            elif pv in (None, ""):
+                base = (f"Set parameter '{pn}' on {target} "
+                        "(value is provided at runtime — ask the user if you don't have it).")
             else:
-                lines.append(f"  {i}. Set parameter '{pn}' = '{pv}' on the placed element "
-                             "(this is the next value in the sequence — use it as-is).")
+                base = (f"Set parameter '{pn}' = '{pv}' on {target} "
+                        "(this is the next value in the sequence — use it as-is).")
         elif a:
-            lines.append(f"  {i}. {a}.")
+            base = f"{a}."
+        else:
+            continue
+
+        if condition:
+            base = f"ONLY IF {condition} — {base}"
+        if repeat:
+            base = _render_repeat(repeat) + " " + base
+        lines.append(f"  {i}. {base}")
+
     if location:
         lines.append(f"Place it at approximately x={location.get('x')}, y={location.get('y')} mm. "
                      "If it needs a host wall and none is there, ask the user to pick a point on a wall.")
@@ -936,6 +988,10 @@ def build_goal(motif: dict, location: dict | None = None, param_values: dict | N
                      "pick_point to have the user click where to place it (on a wall for a door/window).")
     lines.append("Do EVERY step in order — place, set each parameter, and tag — self-correcting on any "
                  "tool error. Do not stop after placing; the routine is only done when all steps succeeded.")
+    if elements or any((s.get("repeat") or s.get("condition")) for s in steps):
+        lines.append("This is a richer routine: honour each step's LOOP (repeat for every item, advancing "
+                     "the index) and CONDITION (act only when the guard holds), and keep each element's "
+                     "role straight when you set parameters and tag.")
     return "\n".join(lines)
 
 
