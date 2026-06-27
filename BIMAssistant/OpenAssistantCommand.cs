@@ -21,6 +21,16 @@ public class OpenAssistantCommand : IExternalCommand
             return Result.Failed;
         }
 
+        // A dockable pane can't be shown without an active document (the Home/start screen). The
+        // AvailabilityClass already greys the button out there, but guard here too so the message is
+        // clear instead of Revit's misleading "pane is not registered".
+        if (commandData.Application.ActiveUIDocument is null)
+        {
+            message = "Open a Revit project first — the BIM Assistant pane needs an active document "
+                    + "and can't open on the Home/start screen.";
+            return Result.Failed;
+        }
+
         try
         {
             DockablePane pane;

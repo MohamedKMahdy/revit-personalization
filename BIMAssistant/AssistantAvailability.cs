@@ -4,12 +4,13 @@ using Autodesk.Revit.UI;
 namespace BIMAssistant;
 
 /// <summary>
-/// Keeps the "Open Assistant" ribbon button enabled even when no document is open.
-/// Revit grays out external-command buttons with no active document by default; the
-/// assistant pane is a pure WebView2 chat host that never touches the model, so it must
-/// stay clickable from the Revit Home/start screen too.
+/// Enables the "Open Assistant" button only when a project is open. A Revit dockable pane
+/// cannot be shown on the Home/start screen (no active document) — GetDockablePane/Show throw
+/// there — so leaving the button clickable produced a misleading "pane is not registered" error.
+/// Greying it out with no document open is the honest UX: open a project, then the button enables.
 /// </summary>
 public class AssistantAvailability : IExternalCommandAvailability
 {
-    public bool IsCommandAvailable(UIApplication applicationData, CategorySet selectedCategories) => true;
+    public bool IsCommandAvailable(UIApplication applicationData, CategorySet selectedCategories)
+        => applicationData?.ActiveUIDocument != null;
 }
