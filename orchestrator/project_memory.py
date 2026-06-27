@@ -189,6 +189,16 @@ def remember_loaded_families(mem: dict, category: str, families: list[str]) -> N
         mem["project"]["loaded_families"][category] = sorted(set(families))
 
 
+# ── Compiled skills (deterministic replay programs distilled from a successful run) ──
+def set_compiled_skill(mem: dict, routine_id: str, skill: dict, label: str = "") -> None:
+    """Store the parameterized replay program for a routine (see orchestrator/compiled_skill.py)."""
+    routine_mem(mem, routine_id, label)["compiled_skill"] = skill
+
+
+def get_compiled_skill(mem: dict, routine_id: str) -> dict | None:
+    return ((mem.get("routines", {}) or {}).get(routine_id) or {}).get("compiled_skill")
+
+
 # ── Cross-run failure learning ────────────────────────────────────────────────────
 # The executor self-corrects WITHIN a run but starts blind every run, so it repeats the same
 # opening mistakes (live logs: place_element returned "created 0" 7x across runs, none recovered).

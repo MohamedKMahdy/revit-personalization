@@ -48,7 +48,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mcp_server.revit_bridge import execute_shortcut, _extract_element_id, _call_plugin, pick_point
 from orchestrator.executor_agent import (run_executor, build_goal, required_steps_from_motif,
                                           placed_element_id, resolve_routine_values, choose_start_model,
-                                          build_freeform_goal)
+                                          build_freeform_goal, real_dispatch)
+from orchestrator import compiled_skill
 from orchestrator import project_memory as pm
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -880,6 +881,17 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
     param_values = resolve_routine_values(motif, rec.get("examples", []), _last_vals, existing_values=_existing)
     param_values.update(rec.get("param_overrides") or {})   # a value the user typed in chat wins
 
+    # COMPILED-SKILL deterministic replay: if this routine was already distilled into a program AND we
+    # can bind its holes (params + a known location + host wall), replay it WITHOUT the LLM; otherwise
+    # the agent runs and we distill a skill from its successful trace for next time.
+    _routine_mem = (_mem.get("routines", {}) or {}).get(routine_id) or {}
+    _skill = pm.get_compiled_skill(_mem, routine_id)
+    _bindings = dict(param_values)
+    if location:
+        _bindings["location"] = location
+    if _routine_mem.get("last_host_wall_id"):
+        _bindings["host_wall"] = _routine_mem["last_host_wall_id"]
+
     # COST: for a memory-warm, simple routine on a paid ceiling, start cheap (Haiku) and escalate to
     # the ceiling only if it struggles; cold/novel routines start on the ceiling. No-op on Gemini.
     _routine_entry = (_mem.get("routines", {}) or {}).get(routine_id) or {}
@@ -910,15 +922,8 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         rec_c = _pending_confirms.pop(cid, None)
         return bool(got and rec_c and rec_c.get("approved"))
 
-    async def gen():
-        if memory_block:
-            yield ("data: " + json.dumps({"kind": "memory",
-                   "payload": "Using what I remember about this project."}) + "\n\n")
-        task = asyncio.create_task(asyncio.to_thread(
-            run_executor, build_goal(motif, location, param_values),
-            on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block,
-            required=required_steps_from_motif(motif, param_values),
-            model=start_model, escalate_to=escalate_to))
+    async def _stream_task(task):
+        """Drain the executor/replay event queue to SSE until the task finishes (shared by both paths)."""
         idle = 0
         while not (task.done() and queue.empty()):
             try:
@@ -930,7 +935,50 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
                 if idle % 20 == 0:           # ~5s heartbeat keeps the stream warm while
                     yield ": ping\n\n"        # the executor blocks on a confirmation
                 continue
-        result = await task
+
+    async def gen():
+        if memory_block:
+            yield ("data: " + json.dumps({"kind": "memory",
+                   "payload": "Using what I remember about this project."}) + "\n\n")
+        result = None
+
+        # 1) DETERMINISTIC compiled replay (no LLM) when a skill exists and its holes can be bound.
+        if _skill and compiled_skill.can_replay(_skill, _bindings):
+            yield ("data: " + json.dumps({"kind": "reasoning",
+                   "payload": "Replaying the learned routine deterministically (no LLM)…"}) + "\n\n")
+            ctask = asyncio.create_task(asyncio.to_thread(
+                compiled_skill.run_compiled, _skill, _bindings, real_dispatch, on_event))
+            async for line in _stream_task(ctask):
+                yield line
+            cres = await ctask
+            if cres.get("done"):
+                cres["summary"] = "Replayed the learned routine deterministically (no LLM)."
+                cres["attempts"] = len(cres.get("tool_calls", []))
+                cres["model"] = "compiled"
+                result = cres
+            else:
+                yield ("data: " + json.dumps({"kind": "reasoning",
+                       "payload": "Compiled replay couldn't finish — falling back to the agent."}) + "\n\n")
+
+        # 2) AGENT path (no skill, holes unbindable, or replay failed). On success, distill a skill.
+        if result is None:
+            task = asyncio.create_task(asyncio.to_thread(
+                run_executor, build_goal(motif, location, param_values),
+                on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block,
+                required=required_steps_from_motif(motif, param_values),
+                model=start_model, escalate_to=escalate_to))
+            async for line in _stream_task(task):
+                yield line
+            result = await task
+            if result.get("done"):
+                try:
+                    sk = compiled_skill.synthesize(result.get("tool_calls", []), set(_var_params))
+                    if sk:
+                        _m = pm.load()
+                        pm.set_compiled_skill(_m, routine_id, sk, label)
+                        pm.save(_m)
+                except Exception:
+                    pass
         eid = placed_element_id(result.get("tool_calls", []))   # any placement tool, not just place_element
         if eid is not None:
             rec["last_element_id"] = eid
