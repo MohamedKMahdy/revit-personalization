@@ -599,6 +599,48 @@ def _max_in_sequence(values: list) -> str | None:
     return best
 
 
+def _parse_token(v) -> tuple | None:
+    """Split a value into (prefix, number, zero-pad width, suffix), or None if it has no number.
+    'D-101' -> ('D-', 101, 3, ''); 'W-09' -> ('W-', 9, 2, '')."""
+    m = re.search(r"(\d+)(\D*)$", str(v))
+    if not m:
+        return None
+    return str(v)[:m.start(1)], int(m.group(1)), len(m.group(1)), m.group(2)
+
+
+def induce_sequence_rule(values: list) -> dict | None:
+    """UNDERSTAND the sequence: infer its generating rule (shared prefix/suffix/zero-pad + a constant
+    numeric STEP) from the observed values, instead of assuming a hardcoded +1. Returns
+    {prefix, suffix, pad, step, last} or None if the values aren't a single consistent arithmetic
+    sequence. e.g. ['W-100','W-105','W-110'] -> step 5 (next 'W-115'), not 'W-111'."""
+    parsed = [p for p in (_parse_token(v) for v in values if v not in (None, "")) if p]
+    if len(parsed) < 3:
+        return None            # need >=3 points so >=2 agreeing diffs confirm the step (avoid guessing
+                               # a step from 2 ambiguous points — that's over-generalization)
+    if len({p[0] for p in parsed}) != 1 or len({p[3] for p in parsed}) != 1:
+        return None                                  # mixed prefix/suffix -> not one sequence
+    nums = sorted({p[1] for p in parsed})
+    if len(nums) < 3:
+        return None                                  # <3 distinct numbers -> step unconfirmed
+    diffs = {b - a for a, b in zip(nums, nums[1:])}
+    if len(diffs) != 1 or 0 in diffs:
+        return None                                  # not a constant non-zero arithmetic step
+    return {"prefix": parsed[0][0], "suffix": parsed[0][3],
+            "pad": max(p[2] for p in parsed), "step": diffs.pop(), "last": nums[-1]}
+
+
+def next_from_rule(rule: dict, used=None) -> str:
+    """The next value per an induced sequence rule, skipping any value already in `used` (uniqueness)."""
+    used = {str(u) for u in (used or set())}
+    n = rule["last"] + rule["step"]
+    for _ in range(10000):
+        cand = f"{rule['prefix']}{str(n).zfill(rule['pad'])}{rule['suffix']}"
+        if cand not in used:
+            return cand
+        n += rule["step"]
+    return f"{rule['prefix']}{str(n).zfill(rule['pad'])}{rule['suffix']}"
+
+
 def resolve_routine_values(motif: dict, examples: list | None = None,
                            last_values: dict | None = None,
                            existing_values: dict | None = None) -> dict:
@@ -626,8 +668,20 @@ def resolve_routine_values(motif: dict, examples: list | None = None,
         if pv is not None and ptype != "variable":
             out[pn] = pv                                # constant — use as recorded
             continue
-        # variable → next in sequence: prefer the value we set last time, else the highest seen in
-        # the recorded examples (and skip junk like a stray "None" from a past malformed run).
+        # UNDERSTAND THE SEQUENCE: gather every observed value for this param (the value we set last
+        # + all recorded examples) and INDUCE its generating rule (prefix/step/zero-pad), so the next
+        # value follows the user's actual pattern (e.g. step 5, or per-scheme zero-pad) rather than a
+        # hardcoded +1. Fall back to the simple increment only when no consistent rule can be learned.
+        observed = [v for v in (
+            [_clean(last_values.get(pn))]
+            + [_clean(a.get("param_value_after") or a.get("param_value"))
+               for e in examples for a in (e.get("actions") or []) if a.get("param_name") == pn])
+            if v is not None]
+        rule = induce_sequence_rule(observed)
+        if rule:
+            out[pn] = next_from_rule(rule, existing.get(pn))
+            continue
+        # fallback (single sample / irregular): the simple next-in-sequence.
         nxt = next_in_sequence(_clean(last_values.get(pn)))
         if nxt is None:
             seen = [_clean(a.get("param_value_after") or a.get("param_value"))

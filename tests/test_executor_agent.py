@@ -571,6 +571,35 @@ def test_resolve_routine_values_constants_and_sequences():
     assert vals2["Mark"] == "D-104" and vals2["Width"] == "900"
 
 
+def test_induce_sequence_rule_learns_the_step():
+    """Understand the sequence: learn the actual step/format, not a hardcoded +1."""
+    r = ex.induce_sequence_rule(["W-100", "W-105", "W-110"])
+    assert r and r["step"] == 5 and r["prefix"] == "W-" and r["pad"] == 3 and r["last"] == 110
+    assert ex.next_from_rule(r) == "W-115"                       # NOT W-111
+    assert ex.next_from_rule(r, used={"W-115"}) == "W-120"       # uniqueness respected
+    r1 = ex.induce_sequence_rule(["D-101", "D-102", "D-103"])
+    assert r1["step"] == 1 and ex.next_from_rule(r1) == "D-104"
+    r0 = ex.induce_sequence_rule(["001", "002", "003"])          # bare zero-padded numbers
+    assert r0["pad"] == 3 and ex.next_from_rule(r0) == "004"
+    # not inducible: <3 points (ambiguous), mixed format, non-arithmetic, non-numeric
+    assert ex.induce_sequence_rule(["W-100", "W-105"]) is None
+    assert ex.induce_sequence_rule(["D-1", "W-2", "D-3"]) is None
+    assert ex.induce_sequence_rule(["1", "2", "4"]) is None      # diffs {1,2} -> not constant
+    assert ex.induce_sequence_rule(["a", "b", "c"]) is None
+
+
+def test_resolve_uses_induced_step_not_plus_one():
+    """The headline fix: a step-5 Mark sequence yields the next by +5, not +1."""
+    motif = {"steps": [{"action_type": "SetParam", "param_name": "Mark",
+                        "param_value": None, "param_value_type": "variable"}]}
+    examples = [{"actions": [{"param_name": "Mark", "param_value_after": v}]}
+                for v in ("D-100", "D-105", "D-110")]
+    assert ex.resolve_routine_values(motif, examples=examples)["Mark"] == "D-115"   # understood step 5
+    # two-point case stays conservative (fallback +1), preserving prior behaviour
+    two = [{"actions": [{"param_name": "Mark", "param_value_after": v}]} for v in ("D-101", "D-103")]
+    assert ex.resolve_routine_values(motif, examples=two)["Mark"] == "D-104"
+
+
 def test_resolve_routine_values_skips_existing_marks():
     """A computed variable value must not collide with one already in the live model (no duplicate Mark)."""
     motif = {"steps": [{"action_type": "SetParam", "param_name": "Mark",
