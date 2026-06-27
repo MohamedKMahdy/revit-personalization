@@ -1248,6 +1248,52 @@ async def api_memory_forget(body: ForgetIn):
     return {"ok": True}
 
 
+# ── Active confirmation of understanding (Stage 3) ──────────────────────────────────
+@app.get("/api/understanding")
+async def api_understanding(pattern_id: str = ""):
+    """What the agent thinks it UNDERSTANDS about a routine (induced rules + intent) with the user's
+    confirmation status — the data behind the mixed-initiative 'is this right?' panel."""
+    rec = _patterns.get(pattern_id)
+    if not rec:
+        return {"understanding": []}
+    from orchestrator.understanding import describe_understanding
+    hyps = describe_understanding(rec.get("motif") or {}, rec.get("examples") or [])
+    mem = pm.load()
+    pm.record_understanding(mem, pattern_id, hyps, rec.get("label", ""))
+    pm.save(mem)
+    stored = (mem.get("routines", {}).get(pattern_id) or {}).get("understanding") or {}
+    out = [{**h, "status": (stored.get(h["key"]) or {}).get("status", "proposed"),
+            "correction": (stored.get(h["key"]) or {}).get("correction", "")} for h in hyps]
+    return {"understanding": out}
+
+
+class UnderstandingConfirmIn(BaseModel):
+    pattern_id: str = ""
+    key: str = ""
+    accepted: bool = False
+    correction: str = ""
+
+
+@app.post("/api/understanding/confirm")
+async def api_understanding_confirm(body: UnderstandingConfirmIn):
+    """Record the user's verdict on an understanding hypothesis (confirm / correct). A correction
+    overrides the inferred rule; repeated corrections auto-demote it. Logged to the understanding
+    ledger for the thesis."""
+    pid, key = (body.pattern_id or "").strip(), (body.key or "").strip()
+    if not pid or not key:
+        return {"ok": False, "error": "pattern_id and key required"}
+    rec = _patterns.get(pid) or {}
+    mem = pm.load()
+    status = pm.confirm_understanding(mem, pid, key, bool(body.accepted),
+                                      (body.correction or "").strip(), rec.get("label", ""))
+    pm.save(mem)
+    from orchestrator.understanding import log_understanding
+    from datetime import date
+    log_understanding(pid, [{"key": key, "status": status, "accepted": bool(body.accepted),
+                             "correction": (body.correction or "").strip(), "date": date.today().isoformat()}])
+    return {"ok": True, "status": status}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Chat UI  (served at /)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1388,6 +1434,13 @@ body{font-family:var(--font);
 .predict-chip{margin:6px 0;padding:9px 12px;border-radius:10px;background:#eaf2fb;
   border:1px solid var(--tum,#3070B3);color:var(--tum-d,#0A2D57);font-size:13px;
   display:flex;align-items:center;gap:8px}
+.understanding{margin:6px 0;padding:8px 12px;border-radius:10px;background:#f4f8f3;
+  border:1px solid var(--tum-green,#A2AD00);color:#2b3a14;font-size:13px}
+.understanding .u-hd{font-weight:600;margin-bottom:6px}
+.understanding .u-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:3px 0}
+.understanding .u-stmt{flex:1}
+.understanding .u-act button{font-size:12px;margin-left:6px;padding:3px 8px;border-radius:7px;
+  border:1px solid var(--tum-green,#A2AD00);background:#fff;cursor:pointer}
 .predict-chip .pc-text{flex:1}
 .predict-chip button{border:none;border-radius:6px;padding:5px 11px;cursor:pointer;font-size:12px}
 .predict-chip .pc-apply{background:var(--tum,#3070B3);color:#fff}
@@ -1464,6 +1517,7 @@ body{font-family:var(--font);
 
   <div class="chat" id="chat"></div>
   <div class="status" id="status"></div>
+  <div class="understanding" id="understanding-panel" style="display:none"></div>
   <div class="predict-chip" id="predict-chip" style="display:none"></div>
 
   <div class="input-row">
@@ -1696,12 +1750,39 @@ async function switchTo(id){
     }
 
     await loadPatterns();                       // refresh highlight + new→seen dot
+    loadUnderstanding(id);                       // "did I understand this right?" (Stage 3)
     if(!(res.messages||[]).length){             // fresh pattern → generate greeting
       await startGreeting(id);
     }
   } finally {
     _switching = false;
   }
+}
+
+async function loadUnderstanding(id){
+  const panel = document.getElementById('understanding-panel');
+  if(!panel) return;
+  panel.style.display = 'none'; panel.innerHTML = '';
+  let data; try{ data = await (await fetch('/api/understanding?pattern_id=' + encodeURIComponent(id))).json(); }
+  catch(e){ return; }
+  const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+  const pending = ((data && data.understanding) || []).filter(h => h.status === 'proposed' || h.status === 'corrected');
+  if(!pending.length) return;
+  panel.innerHTML = '<div class="u-hd">🧠 Did I understand this right?</div>' + pending.map(h =>
+    `<div class="u-row"><div class="u-stmt">${esc(h.statement)}</div><div class="u-act">`
+    + `<button onclick="confirmU('${id}','${esc(h.key)}',true)">✓ Yes</button>`
+    + `<button onclick="correctU('${id}','${esc(h.key)}')">✎ Not quite</button></div></div>`).join('');
+  panel.style.display = 'block';
+}
+async function confirmU(pid, key, accepted, correction){
+  try{ await fetch('/api/understanding/confirm', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({pattern_id:pid, key:key, accepted:accepted, correction:correction||''})}); }
+  catch(e){}
+  loadUnderstanding(pid);
+}
+function correctU(pid, key){
+  const c = prompt('What should it do instead?');
+  if(c && c.trim()) confirmU(pid, key, false, c.trim());
 }
 
 async function delPattern(id){

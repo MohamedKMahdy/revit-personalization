@@ -313,6 +313,64 @@ def learn_corrections(mem: dict, routine_id: str, label: str, tool_calls: list[d
                         recovered=True, run_date=run_date)
 
 
+# ── Active-confirmation of understanding (Stage 3) ──────────────────────────────────
+# The agent INFERS rules/intent (Stage 1-2), but inferred != known. We store each hypothesis and the
+# user's verdict so confirmed understanding is APPLIED, a correction OVERRIDES the inferred rule, and a
+# rule the user keeps correcting is AUTO-DEMOTED (Stage 4) — the agent stops trusting it. Unconfirmed
+# understanding may suggest but is never silently acted on (preserves the every-write-confirmed rule).
+DEMOTE_AFTER_CORRECTIONS = 2
+
+
+def record_understanding(mem: dict, routine_id: str, hypotheses: list, label: str = "") -> None:
+    """Store/refresh proposed hypotheses (new keys start 'proposed'; existing status is preserved)."""
+    u = routine_mem(mem, routine_id, label).setdefault("understanding", {})
+    for h in hypotheses:
+        cur = u.get(h["key"])
+        if cur is None:
+            u[h["key"]] = {"statement": h["statement"], "kind": h.get("kind", "rule"),
+                           "status": "proposed", "correction": "", "corrections_seen": 0}
+        else:
+            cur["statement"] = h["statement"]               # refresh wording; keep status/correction
+            cur["kind"] = h.get("kind", cur.get("kind", "rule"))
+
+
+def confirm_understanding(mem: dict, routine_id: str, key: str, accepted: bool,
+                          correction: str = "", label: str = "") -> str:
+    """Apply the user's verdict on a hypothesis. A correction -> 'corrected' (stored, overrides the
+    inferred rule) and, once corrected >= DEMOTE_AFTER_CORRECTIONS times, AUTO-DEMOTED to 'demoted'
+    (the agent falls back to literal/ask). accepted -> 'confirmed'; else 'rejected'. Returns status."""
+    u = routine_mem(mem, routine_id, label).setdefault("understanding", {})
+    e = u.setdefault(key, {"statement": "", "kind": "rule", "status": "proposed",
+                           "correction": "", "corrections_seen": 0})
+    correction = (correction or "").strip()
+    if correction:
+        e["correction"] = correction
+        e["corrections_seen"] = e.get("corrections_seen", 0) + 1
+        e["status"] = "demoted" if e["corrections_seen"] >= DEMOTE_AFTER_CORRECTIONS else "corrected"
+    elif accepted:
+        e["status"] = "confirmed"
+    else:
+        e["status"] = "rejected"
+    return e["status"]
+
+
+def understanding_block(mem: dict, routine_id: str) -> str:
+    """Render the understanding the user CONFIRMED/CORRECTED into the executor prompt (apply it).
+    'demoted'/'rejected'/'proposed' are intentionally omitted — the agent must not act on understanding
+    the user disowned or hasn't yet confirmed."""
+    u = (mem.get("routines", {}).get(routine_id) or {}).get("understanding") or {}
+    lines: list[str] = []
+    for e in u.values():
+        if e.get("status") == "confirmed" and e.get("statement"):
+            lines.append(f"CONFIRMED: {e['statement']}")
+        elif e.get("status") == "corrected" and e.get("correction"):
+            lines.append(f"The user CORRECTED an earlier guess — follow this instead: {e['correction']}")
+    if not lines:
+        return ""
+    return ("\n\nUNDERSTANDING THE USER CONFIRMED FOR THIS ROUTINE (apply it):\n- "
+            + "\n- ".join(lines) + "\n")
+
+
 # ── Rendering into context ────────────────────────────────────────────────────────
 def user_block(mem: dict) -> str:
     """The per-user profile rendered for a system prompt (used by the chat + executor)."""
@@ -384,6 +442,7 @@ def to_prompt(mem: dict, routine_id: str) -> str:
 
     block = user_block(mem)
     block += corrections_block(mem, routine_id)        # mistakes-to-avoid, high in the prompt
+    block += understanding_block(mem, routine_id)      # user-confirmed/corrected understanding to apply
     if lines:
         block += ("\n\nWHAT YOU ALREADY KNOW ABOUT THIS PROJECT (memory — apply it before guessing):\n- "
                   + "\n- ".join(lines) + "\n")
