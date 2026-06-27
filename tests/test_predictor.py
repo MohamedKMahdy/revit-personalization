@@ -67,6 +67,20 @@ def test_predict_none_on_empty():
     assert NextActionPredictor([]).predict(_door_actions()[:1]) is None
 
 
+def test_prediction_carries_intent_and_states_the_why():
+    """Stage 2: when the routine's intent is known, the prediction surfaces the WHY (goal) + WHEN."""
+    pred = NextActionPredictor([_door_routine()])
+    intents = {"routine_door": {"goal": "keep the door schedule complete",
+                                "trigger": "a door placed with no Mark"}}
+    p = pred.predict(_door_actions()[:1], intents=intents)
+    assert p.goal == "keep the door schedule complete"
+    assert p.trigger == "a door placed with no Mark"
+    assert "to keep the door schedule complete" in p.headline
+    # without intent, the headline still works (no WHY clause)
+    p2 = pred.predict(_door_actions()[:1])
+    assert p2.goal == "" and "to keep the door schedule" not in p2.headline
+
+
 def test_current_prefix_picks_in_progress_episode():
     # two elements placed; the SECOND is the in-progress one
     recs = _door_actions()[:2] + [

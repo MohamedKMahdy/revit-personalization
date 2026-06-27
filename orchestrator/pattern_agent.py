@@ -96,6 +96,16 @@ claim the examples do not support, so unsupported structure is wasted):
 - COMPUTED VALUE: if a SetParam value is derived rather than literal/sequence (e.g. width=2*height,
   or the host room's number), set "value_expr":"<expression>" instead of a literal param_value.
 All of these are OPTIONAL keys on the existing step/motif shape; omit them for ordinary flat routines.
+
+INTENT (OPTIONAL — your best HYPOTHESIS of WHY and WHEN, inferred from the examples)
+Add a top-level "intent" object capturing the routine's purpose and trigger. This is a hypothesis to
+be CONFIRMED with the user, not a fact — keep it short, plain, and grounded in what the examples show:
+  "intent": {
+    "goal": "<what the user is ultimately achieving, e.g. 'a schedule-ready, tagged door'>",
+    "trigger": "<the situation that should prompt this routine, e.g. 'a door placed with no Mark yet'>",
+    "downstream": "<what it feeds, if evident, e.g. 'the door schedule'; else ''>"
+  }
+Omit intent entirely if the examples don't suggest a clear purpose.
 """
 
 
@@ -152,6 +162,22 @@ def _validate_and_downgrade(motif: dict, examples: list[dict]) -> dict:
     if notes:
         motif["_downgrade_notes"] = notes
     return motif
+
+
+def _normalize_intent(motif: dict) -> None:
+    """Keep `intent` as a well-formed HYPOTHESIS ({goal, trigger, downstream} strings) or drop it.
+    Unlike the richer-workflow fields, intent is NOT validated against the examples — it is an inferred
+    latent (the WHY/WHEN) meant to be confirmed with the user (Stage 3), so we only shape-check it and
+    never silently treat it as established fact."""
+    it = motif.get("intent")
+    if not isinstance(it, dict):
+        motif.pop("intent", None)
+        return
+    clean = {k: str(it.get(k) or "").strip() for k in ("goal", "trigger", "downstream")}
+    if clean["goal"] or clean["trigger"]:
+        motif["intent"] = clean
+    else:
+        motif.pop("intent", None)              # nothing useful inferred
 
 
 def extract_motif(examples: list[dict], routine_label: str = "") -> dict:
@@ -232,4 +258,6 @@ def extract_motif(examples: list[dict], routine_label: str = "") -> dict:
         raise ValueError(f"Pattern Agent motif missing required keys: {missing}\n\nGot: {motif}")
 
     # Deterministic guard: keep only the richer-workflow structure the examples actually support.
-    return _validate_and_downgrade(motif, examples)
+    motif = _validate_and_downgrade(motif, examples)
+    _normalize_intent(motif)                    # keep intent as a shape-checked hypothesis (or drop it)
+    return motif

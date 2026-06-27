@@ -1195,7 +1195,10 @@ async def api_predict():
         from mcp_server.log_reader import load_real_action_records, list_candidate_routines
         records = await asyncio.to_thread(load_real_action_records)
         routines = await asyncio.to_thread(list_candidate_routines)
-        p = predict_live(records, routines)
+        # intent (the WHY/WHEN) from any already-extracted motif, so the chip can explain itself
+        intents = {pid: (rec.get("motif") or {}).get("intent")
+                   for pid, rec in _patterns.items() if (rec.get("motif") or {}).get("intent")}
+        p = predict_live(records, routines, intents=intents)
     except Exception as exc:
         return {"prediction": None, "error": str(exc)[:160]}
     if not p:
@@ -1203,7 +1206,7 @@ async def api_predict():
     return {"prediction": {
         "routine_id": p.routine_id, "label": p.routine_label, "headline": p.headline,
         "support": p.support, "confidence": p.confidence, "match": p.match,
-        "next_actions": p.next_actions}}
+        "next_actions": p.next_actions, "goal": p.goal, "trigger": p.trigger}}
 
 
 # ── Per-user memory (what the assistant remembers about you) ───────────────────────

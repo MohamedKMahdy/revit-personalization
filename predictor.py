@@ -27,17 +27,22 @@ class Prediction:
     confidence: float                  # 0-1: routine tightness, discounted for a loose (type-only) match
     match: str                         # "exact" (token prefix) | "type" (action-type prefix)
     next_actions: list[dict] = field(default_factory=list)   # remaining steps: {action_type, key}
+    goal: str = ""                     # the routine's inferred intent.goal (the WHY), if known
+    trigger: str = ""                  # the routine's inferred intent.trigger (the WHEN), if known
 
     @property
     def headline(self) -> str:
-        """One-line human suggestion for the immediate next step (the inline chip text)."""
+        """One-line human suggestion for the immediate next step (the inline chip text). When the
+        routine's intent is known, it states the WHY ('to keep the door schedule complete') so the
+        suggestion reflects understanding, not just sequence replay."""
         if not self.next_actions:
             return ""
         nxt = self.next_actions[0]
         verb = {"Place": "place", "SetParam": "set", "Tag": "tag with"}.get(nxt["action_type"], nxt["action_type"])
         what = nxt.get("key") or "it"
         more = f" (+{len(self.next_actions) - 1} more)" if len(self.next_actions) > 1 else ""
-        return f"You usually {verb} {what} next{more} — apply your usual '{self.routine_label}'?"
+        why = f" to {self.goal}" if self.goal else ""
+        return f"You usually {verb} {what} next{more}{why} — apply your usual '{self.routine_label}'?"
 
 
 def current_prefix(records: list[ActionRecord]) -> list[ActionRecord]:
@@ -71,10 +76,13 @@ class NextActionPredictor:
             if canon:
                 self._routines.append((r, canon))
 
-    def predict(self, prefix: list[ActionRecord]) -> Prediction | None:
+    def predict(self, prefix: list[ActionRecord],
+                intents: dict | None = None) -> Prediction | None:
         """Best next-step prediction for an in-progress prefix, or None if nothing matches.
         Prefers an EXACT typed-token prefix match (highest support wins); falls back to an
-        action-TYPE prefix match (e.g. placed a door -> usually set a param + tag) at lower confidence."""
+        action-TYPE prefix match (e.g. placed a door -> usually set a param + tag) at lower confidence.
+        `intents` = {routine_id: motif.intent}: when the matched routine's intent is known, the
+        prediction carries the WHY/WHEN so the suggestion reflects understanding, not just sequence."""
         if not prefix:
             return None
         ptok = [token(a) for a in prefix]
@@ -94,21 +102,24 @@ class NextActionPredictor:
 
         if exact:
             r, canon = max(exact, key=lambda rc: (rc[0].support, rc[0].confidence))
-            return self._to_prediction(r, canon, n, match="exact", conf=r.confidence or 1.0)
+            return self._to_prediction(r, canon, n, match="exact", conf=r.confidence or 1.0, intents=intents)
         if typed:
             r, canon = max(typed, key=lambda rc: (rc[0].support, rc[0].confidence))
-            return self._to_prediction(r, canon, n, match="type", conf=0.5 * (r.confidence or 1.0))
+            return self._to_prediction(r, canon, n, match="type", conf=0.5 * (r.confidence or 1.0), intents=intents)
         return None
 
     @staticmethod
     def _to_prediction(r: CandidateRoutine, canon: list[ActionRecord], n: int,
-                       *, match: str, conf: float) -> Prediction:
+                       *, match: str, conf: float, intents: dict | None = None) -> Prediction:
         from detector._common import derive_key
         nxt = [{"action_type": a.action_type, "key": derive_key(a)} for a in canon[n:]]
+        intent = (intents or {}).get(r.id) or {}
         return Prediction(routine_id=r.id, routine_label=r.label or build_label(canon),
-                          support=r.support, confidence=round(conf, 3), match=match, next_actions=nxt)
+                          support=r.support, confidence=round(conf, 3), match=match, next_actions=nxt,
+                          goal=str(intent.get("goal") or ""), trigger=str(intent.get("trigger") or ""))
 
 
-def predict_live(records: list[ActionRecord], routines: list[CandidateRoutine]) -> Prediction | None:
+def predict_live(records: list[ActionRecord], routines: list[CandidateRoutine],
+                 intents: dict | None = None) -> Prediction | None:
     """Convenience: predict the next action for the current in-progress episode in a live log."""
-    return NextActionPredictor(routines).predict(current_prefix(records))
+    return NextActionPredictor(routines).predict(current_prefix(records), intents=intents)

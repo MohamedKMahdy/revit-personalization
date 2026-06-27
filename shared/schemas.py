@@ -167,6 +167,11 @@ class Motif(BaseModel):
     parameters_to_prompt: list[str] = []  # param_names that the user must supply
     workflow_type:        str = "linear"  # linear | compound | loop | conditional
     elements:             list[dict] = [] # roles + host relationships for multi-element routines
+    # The routine's inferred INTENT — the latent the agent uses to understand (not just replay) the
+    # routine: a HYPOTHESIS of WHY and WHEN, to be confirmed with the user (Stage 3), never auto-applied.
+    #   {"goal": "a schedule-ready tagged door", "trigger": "a door placed with no Mark",
+    #    "downstream": "the door schedule"}
+    intent:               dict | None = None
 
 
 class ShortcutConfig(BaseModel):

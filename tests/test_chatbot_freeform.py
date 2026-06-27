@@ -149,7 +149,7 @@ def test_execute_task_drops_session_if_unclean(client, monkeypatch):
 def test_predict_endpoint_returns_prediction(client, monkeypatch):
     monkeypatch.setattr("mcp_server.log_reader.load_real_action_records", lambda: [], raising=False)
     monkeypatch.setattr("mcp_server.log_reader.list_candidate_routines", lambda *a, **k: [], raising=False)
-    monkeypatch.setattr("predictor.predict_live", lambda recs, routines: Prediction(
+    monkeypatch.setattr("predictor.predict_live", lambda recs, routines, intents=None: Prediction(
         routine_id="r1", routine_label="Place(M_Door) → SetParam×1 → Tag", support=5,
         confidence=0.9, match="exact", next_actions=[{"action_type": "SetParam", "key": "Mark"}]))
     r = client.get("/api/predict").json()

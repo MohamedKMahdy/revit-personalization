@@ -12,7 +12,19 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from orchestrator.pattern_agent import _validate_and_downgrade  # noqa: E402
+from orchestrator.pattern_agent import _validate_and_downgrade, _normalize_intent  # noqa: E402
+
+
+def test_normalize_intent_keeps_wellformed_hypothesis():
+    m = {"intent": {"goal": " schedule-ready door ", "trigger": "door with no Mark"}}
+    _normalize_intent(m)
+    assert m["intent"] == {"goal": "schedule-ready door", "trigger": "door with no Mark", "downstream": ""}
+
+
+def test_normalize_intent_drops_empty_or_malformed():
+    for bad in ({"intent": {"goal": "", "trigger": ""}}, {"intent": "a string"}, {"intent": None}):
+        _normalize_intent(bad)
+        assert "intent" not in bad
 
 
 def _ex(actions):
