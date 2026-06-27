@@ -266,6 +266,39 @@ def test_resolve_type_id(monkeypatch):
     assert ex._resolve_type_id("Missing")[0] is None           # not loaded
 
 
+def test_tag_element_resolves_and_passes_tag_type_id(monkeypatch):
+    """tag_element must resolve the tag FamilyTypeId from the element's category and pass tagTypeId
+    (the plugin's auto-find by category is broken). Mirrors the place_element typeId fix."""
+    from mcp_server import revit_bridge as rb
+    sent = {}
+
+    def fake_call(command, params=None, timeout=None):
+        if command == "get_element_info":
+            return {"Success": True, "Response": {"elementId": params["elementId"], "category": "Doors"}}
+        if command == "get_available_family_types":
+            sent["tag_category"] = params["categoryList"]
+            return [{"FamilyName": "M_Door Tag", "TypeName": "Standard", "FamilyTypeId": 604557}]
+        if command == "tag_element":
+            sent["tag_params"] = params
+            return {"Success": True, "Response": [70001]}
+        return {}
+
+    monkeypatch.setattr(rb, "_call_plugin", fake_call)
+    out = ex.real_dispatch("tag_element", {"element_id": 1664406})
+    assert out["success"] is True and out["tag_id"] == 70001
+    assert sent["tag_category"] == ["OST_DoorTags"]          # Doors -> OST_DoorTags
+    assert sent["tag_params"]["tagTypeId"] == "604557"       # resolved id passed to the plugin
+
+
+def test_tag_category_mapping():
+    assert ex._tag_category_for("Doors") == "OST_DoorTags"
+    assert ex._tag_category_for("Windows") == "OST_WindowTags"
+    assert ex._tag_category_for("Walls") == "OST_WallTags"
+    assert ex._tag_category_for("Structural Columns") == "OST_StructuralColumnTags"
+    assert ex._tag_category_for("Floors") == "OST_FloorTags"   # heuristic: drop 's' + Tags
+    assert ex._tag_category_for("") is None
+
+
 def test_real_dispatch_query_tools(monkeypatch):
     """The new read tools map onto the right plugin calls and normalize their results."""
     from mcp_server import revit_bridge as rb

@@ -86,10 +86,16 @@ CURATED_SCHEMAS: list[dict] = [
     },
     {
         "name": "tag_element",
-        "description": "Tag a placed element in the active view (auto-selects a tag family by category).",
+        "description": "Tag a placed element in the active view. The tag family is resolved "
+                       "automatically from the element's category (e.g. a door → its door tag); pass "
+                       "tag_type_id only to force a specific tag type.",
         "input_schema": {
             "type": "object",
-            "properties": {"element_id": {"type": "integer"}},
+            "properties": {
+                "element_id": {"type": "integer"},
+                "tag_type_id": {"type": "integer", "description": "Optional explicit tag FamilyTypeId "
+                                "(from get_available_family_types on the tag category, e.g. OST_DoorTags)"},
+            },
             "required": ["element_id"],
         },
     },
@@ -244,6 +250,10 @@ YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
   retry place_element at that point — or pass host_wall_id if you know a wall.
 - "created 0" / "type not found" / "family not loaded": FIRST call get_available_family_types for
   the category — if the family is genuinely NOT loaded, pick the closest loaded one and retry.
+- "No tag family found": tag_element now resolves the tag type automatically, so this is rare; if it
+  still happens, call get_available_family_types on the TAG category (e.g. 'OST_DoorTags',
+  'OST_WindowTags') and retry tag_element with tag_type_id set to that FamilyTypeId. Do NOT loop the
+  tag — one successful tag is enough; do not re-tag an element that already returned a tag id.
 - HOSTED FAMILIES (doors & windows): place_element places these correctly — it resolves the family
   to its loaded type and hosts it on a wall — BUT it needs a host wall. So for a door/window, pass
   host_wall_id: get it from get_selected_elements (the user's selected wall) or pick_point ON a wall,
@@ -331,6 +341,48 @@ def _resolve_type_id(family_name: str, type_name: str | None = None,
         return None, category
 
 
+# Element category -> its TAG category. The plugin's tag_element auto-find is broken (it compares the
+# tag family's category to the ELEMENT's category, which never match — a door tag is OST_DoorTags, the
+# door is OST_Doors), so we resolve the tag type id ourselves and pass it, like place_element's typeId.
+_TAG_CATEGORY = {
+    "Doors": "OST_DoorTags", "Windows": "OST_WindowTags", "Walls": "OST_WallTags",
+    "Rooms": "OST_RoomTags", "Floors": "OST_FloorTags", "Furniture": "OST_FurnitureTags",
+    "Casework": "OST_CaseworkTags", "Generic Models": "OST_GenericModelTags",
+    "Lighting Fixtures": "OST_LightingFixtureTags", "Plumbing Fixtures": "OST_PlumbingFixtureTags",
+    "Structural Columns": "OST_StructuralColumnTags", "Structural Framing": "OST_StructuralFramingTags",
+}
+
+
+def _tag_category_for(category: str | None) -> str | None:
+    if not category:
+        return None
+    if category in _TAG_CATEGORY:
+        return _TAG_CATEGORY[category]
+    base = category[:-1] if category.endswith("s") else category   # Doors->Door->OST_DoorTags
+    return "OST_" + base.replace(" ", "") + "Tags"
+
+
+def _resolve_tag_type_id(element_id: int) -> int | None:
+    """Resolve the tag FamilyTypeId for an element by querying its category and the matching loaded
+    tag family — so tag_element can pass tagTypeId instead of relying on the plugin's broken auto-find."""
+    from mcp_server import revit_bridge as rb
+    info = rb._call_plugin("get_element_info", {"elementId": int(element_id)})
+    resp = info.get("Response") if isinstance(info, dict) else None
+    category = resp.get("category") if isinstance(resp, dict) else None
+    tag_cat = _tag_category_for(category)
+    if not tag_cat:
+        return None
+    rows = rb._call_plugin("get_available_family_types", {"categoryList": [tag_cat]})
+    for r in (rows if isinstance(rows, list) else []):
+        tid = r.get("FamilyTypeId")
+        if tid:
+            try:
+                return int(tid)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
 def _ok(res: Any) -> bool:
     return isinstance(res, dict) and bool(res.get("Success"))
 
@@ -382,9 +434,14 @@ def real_dispatch(name: str, args: dict) -> dict:
         return {"success": _ok(res), "message": _msg(res) or "parameter set"}
 
     if name == "tag_element":
-        res = rb._call_plugin("tag_element", {
-            "elementId": int(args["element_id"]), "useLeader": False, "offsetX": 0.0, "offsetY": 0.0,
-        })
+        eid = int(args["element_id"])
+        # Resolve the tag type id (the plugin's auto-find by category is broken — see _resolve_tag_type_id)
+        # and pass it as tagTypeId so the plugin uses it directly instead of failing "no tag family found".
+        tag_type_id = args.get("tag_type_id") or _resolve_tag_type_id(eid)
+        params = {"elementId": eid, "useLeader": False, "offsetX": 0.0, "offsetY": 0.0}
+        if tag_type_id:
+            params["tagTypeId"] = str(int(tag_type_id))
+        res = rb._call_plugin("tag_element", params)
         return {"success": _ok(res), "message": _msg(res) or "tagged",
                 "tag_id": rb._extract_element_id(res) if isinstance(res, dict) else None}
 
