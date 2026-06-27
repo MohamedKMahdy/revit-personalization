@@ -96,6 +96,53 @@ def test_execute_task_carries_context_and_writes_outcome_back(client, monkeypatc
         cs._patterns.pop(rid, None)
 
 
+def test_execute_task_persists_executor_session_across_tasks(client, monkeypatch):
+    """Persistent session: the 2nd task continues the SAME executor message history (remembers task 1)
+    instead of starting cold — only when the prior run ended cleanly on an assistant turn."""
+    cs._exec_sessions.clear()
+    rid = "routine_session_test"
+    cs._patterns[rid] = {"id": rid, "label": "x", "status": "new", "history": []}
+    seen = []
+
+    def fake_run(goal, *, on_event=None, confirm_fn=None, memory_block="", prior_messages=None, **kw):
+        seen.append(prior_messages)
+        msgs = list(prior_messages or []) + [{"role": "user", "content": goal},
+                                             {"role": "assistant", "content": "done"}]
+        return {"done": True, "summary": "ok", "attempts": 1, "tool_calls": [], "usage": {}, "messages": msgs}
+
+    monkeypatch.setattr(cs, "run_executor", fake_run)
+    try:
+        client.post("/api/execute-task", json={"text": "first task", "pattern_id": rid})
+        client.post("/api/execute-task", json={"text": "second task", "pattern_id": rid})
+        assert seen[0] is None                                     # 1st task starts cold
+        assert seen[1] and len(seen[1]) >= 2                       # 2nd task continues the session
+        assert any("first task" in str(m.get("content", "")) for m in seen[1])   # remembers task 1
+    finally:
+        cs._patterns.pop(rid, None)
+        cs._exec_sessions.pop(rid, None)
+
+
+def test_execute_task_drops_session_if_unclean(client, monkeypatch):
+    """If a run doesn't end on an assistant turn (e.g. hit the cap), the session is dropped so the
+    next task starts fresh rather than 400-ing on a dangling tool_result turn."""
+    cs._exec_sessions.clear()
+    rid = "routine_session_unclean"
+    cs._patterns[rid] = {"id": rid, "label": "x", "status": "new", "history": []}
+
+    def fake_run(goal, *, prior_messages=None, **kw):
+        # ends on a USER (tool_result) turn — unclean
+        return {"done": False, "summary": "cap", "attempts": 14, "tool_calls": [], "usage": {},
+                "messages": [{"role": "user", "content": goal}, {"role": "user", "content": [{"x": 1}]}]}
+
+    monkeypatch.setattr(cs, "run_executor", fake_run)
+    try:
+        client.post("/api/execute-task", json={"text": "t", "pattern_id": rid})
+        assert rid not in cs._exec_sessions       # unclean -> not stored
+    finally:
+        cs._patterns.pop(rid, None)
+        cs._exec_sessions.pop(rid, None)
+
+
 def test_predict_endpoint_returns_prediction(client, monkeypatch):
     monkeypatch.setattr("mcp_server.log_reader.load_real_action_records", lambda: [], raising=False)
     monkeypatch.setattr("mcp_server.log_reader.list_candidate_routines", lambda *a, **k: [], raising=False)

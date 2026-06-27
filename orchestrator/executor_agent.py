@@ -797,6 +797,7 @@ def run_executor(
     escalate_to: str | None = None,
     escalate_after_failures: int = ESCALATE_AFTER_FAILURES,
     preflight: bool = True,
+    prior_messages: list | None = None,
 ) -> dict:
     """Run the self-healing execution loop. Returns
        {done, summary, steps, attempts, tool_calls:[{name,args,result}]}.
@@ -828,7 +829,12 @@ def run_executor(
         facts = _preflight_facts(dispatch_fn, emit)
         if facts:
             goal = facts + "\n\n" + goal
-    messages: list[dict] = [{"role": "user", "content": goal}]
+    # Persistent session: continue from prior_messages (the running tool-use history of earlier tasks)
+    # so the agent REMEMBERS what it already did — element ids it created, families it found loaded,
+    # what is already tagged — instead of re-grounding every task. prior_messages must end on an
+    # assistant turn (a cleanly-finished prior run) for the new user turn to be valid.
+    _new_turn = {"role": "user", "content": goal}
+    messages: list[dict] = (list(prior_messages) + [_new_turn]) if prior_messages else [_new_turn]
     tool_calls: list[dict] = []
     attempts = 0
     api_reaffirmed = False     # has the agent reaffirmed an API-fallback escalation this turn?
@@ -847,7 +853,7 @@ def run_executor(
             emit("error", str(exc))
             return {"done": False, "summary": f"Executor error: {exc}",
                     "attempts": attempts, "tool_calls": tool_calls, "usage": usage, "model": model,
-                    "nudged": completion_nudges, "escalated": escalated}
+                    "nudged": completion_nudges, "escalated": escalated, "messages": messages}
 
         u = getattr(resp, "usage", None)
         if u is not None:
@@ -900,7 +906,7 @@ def run_executor(
             emit("done", text)
             return {"done": done, "summary": text or "Routine complete.",
                     "attempts": attempts, "tool_calls": tool_calls, "usage": usage, "model": model,
-                    "nudged": completion_nudges, "escalated": escalated}
+                    "nudged": completion_nudges, "escalated": escalated, "messages": messages}
 
         results_content = []
         for tu in tool_uses:

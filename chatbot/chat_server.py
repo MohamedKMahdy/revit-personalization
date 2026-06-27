@@ -931,6 +931,25 @@ async def api_execute_confirm(body: ConfirmIn):
     return {"ok": True, "approved": bool(body.approved)}
 
 
+# In-memory per-conversation executor SESSIONS: the running tool-use history so consecutive free-form
+# tasks continue the SAME agent (it remembers what it already did) instead of starting cold each time.
+# In memory only (resets on chatbot restart); bounded so context + cost stay in check.
+_exec_sessions: dict[str, list] = {}
+_MAX_SESSION_TURNS = 16
+
+
+def _trim_session(messages: list) -> list:
+    """Bound the running session: keep recent turns, trimmed to START at a user 'goal' turn (string
+    content) so no assistant tool_use is left orphaned from its tool_result (which would 400 on reuse)."""
+    if len(messages) <= _MAX_SESSION_TURNS:
+        return messages
+    tail = messages[-_MAX_SESSION_TURNS:]
+    for i, m in enumerate(tail):
+        if m.get("role") == "user" and isinstance(m.get("content"), str):
+            return tail[i:]
+    return messages   # no clean cut point — keep full rather than risk a broken trim
+
+
 @app.post("/api/execute-task")
 async def api_execute_task(body: MessageIn):
     """Free-form conversational execution (Pillar C): run ANY natural-language task or model question
@@ -959,6 +978,13 @@ async def api_execute_task(body: MessageIn):
                 turns.append(f"{m.get('role')}: {c[:220]}")
         context = "\n".join(turns)
 
+    # Continue the SAME executor session for this conversation (so it remembers prior actions);
+    # only reuse a session that ended cleanly on an assistant turn (else the new user turn 400s).
+    skey = (rec.get("id") if rec else None) or "freeform"
+    prior = _exec_sessions.get(skey)
+    if not (prior and prior[-1].get("role") == "assistant"):
+        prior = None
+
     memory_block = _user_memory_prefix()          # user profile context (no routine)
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -984,7 +1010,8 @@ async def api_execute_task(body: MessageIn):
     async def gen():
         yield "data: " + json.dumps({"kind": "reasoning", "payload": f"Task: {task}"}) + "\n\n"
         run = asyncio.create_task(asyncio.to_thread(
-            run_executor, goal, on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block))
+            run_executor, goal, on_event=on_event, confirm_fn=confirm_fn, memory_block=memory_block,
+            prior_messages=prior))
         idle = 0
         while not (run.done() and queue.empty()):
             try:
@@ -997,6 +1024,13 @@ async def api_execute_task(body: MessageIn):
                     yield ": ping\n\n"
                 continue
         result = await run
+        # Persist the running session so the NEXT task continues the same agent — but only if it ended
+        # cleanly (last turn assistant); otherwise drop it so the next task starts fresh (avoids a 400).
+        msgs = result.get("messages") or []
+        if msgs and msgs[-1].get("role") == "assistant":
+            _exec_sessions[skey] = _trim_session(msgs)
+        else:
+            _exec_sessions.pop(skey, None)
         _log_executor_run("freeform", task[:60], goal, result)
         _log_executor_transcript("freeform", task[:60], goal, result, transcript_events)
         # Write the outcome BACK into the conversation so the next turn knows what was done (and the
