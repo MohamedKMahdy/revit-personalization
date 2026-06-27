@@ -1,9 +1,8 @@
 """
-Regression test for the Stage 0 held-out understanding harness (eval/understanding_eval.py).
+Regression test for the Stage 0/1 held-out understanding harness (eval/understanding_eval.py).
 
-Locks the epistemic contract: supported conventions are understood (and beat literal replay), the
-documented gaps stay unsolved (so over-generalization can't silently "pass"), and unpredictable
-values are refused rather than fabricated.
+Locks the epistemic contract: supported conventions are understood (and beat literal replay), and
+under-determined cases are refused rather than fabricated.
 
 Run:  pytest tests/test_understanding_eval.py -v
 """
@@ -25,33 +24,32 @@ def _by_name():
     return {r["name"]: r for r in ue.run()}
 
 
-def test_understanding_beats_detection_on_supported():
+def test_all_supported_understood_and_beat_detection():
     by = _by_name()
-    for n in ("door_mark_next", "window_mark_step5"):
-        assert by[n]["und_ok"], f"{n} should be understood"
-        assert not by[n]["det_ok"], f"{n} should defeat literal replay"
-    # the stepped sequence specifically proves the STEP was learned, not a hardcoded +1
-    assert by["window_mark_step5"]["understanding"] == "W-115"
-    assert by["window_mark_step5"]["detection"] == "W-110"
+    for r in by.values():
+        if r["kind"] == "supported":
+            assert r["und_ok"], f"{r['name']} should be understood"
+            assert not r["det_ok"], f"{r['name']} should defeat literal replay"
 
 
-def test_gaps_are_documented_not_silently_passed():
+def test_specific_generalizations():
     by = _by_name()
-    for n in ("mark_per_level_restart", "frame_by_width"):
-        assert by[n]["kind"] == "gap"
-        assert not by[n]["und_ok"], f"{n} is a known gap; passing it would be over-generalization"
+    assert by["window_mark_step5"]["understanding"] == "W-115"     # learned the step, not +1
+    assert by["frame_by_width"]["understanding"] == "Wide"         # conditional -> held-out width
+    assert by["mark_per_level"]["understanding"] == "D-204"        # per-level sequence, not global last
 
 
-def test_honesty_refuses_to_fabricate():
+def test_honesty_probes_abstain():
     by = _by_name()
-    assert by["freetext_comment"]["understanding"] is None      # abstained
-    assert by["freetext_comment"]["detection"] is not None      # literal replay would fabricate one
+    for n in ("freetext_comment", "frame_one_branch_only", "mark_unseen_level"):
+        assert by[n]["understanding"] is None, f"{n} must abstain (under-determined)"
+        assert by[n]["detection"] is not None, f"{n}: literal replay would fabricate a value"
 
 
-def test_summary_shows_the_gap():
+def test_summary_headline():
     s = ue.summary(ue.run())
-    assert s["understanding_transfer"][0] > s["detection_transfer"][0]   # understanding > detection
-    assert s["detection_transfer"][0] == 0                              # literal replay transfers nothing
-    assert s["supported_understood"] == (2, 2)
-    assert s["honesty_refused"] == (1, 1)
-    assert set(s["open_gaps"]) == {"mark_per_level_restart", "frame_by_width"}
+    assert s["understanding_supported"] == (4, 4)
+    assert s["detection_supported"] == (0, 4)        # literal replay generalizes to nothing
+    assert s["understanding_honesty"] == (3, 3)      # abstains on all under-determined cases
+    assert s["detection_honesty"] == (0, 3)
+    assert s["failures"] == []
