@@ -1190,6 +1190,13 @@ body{font-family:var(--font);
           font-family:var(--font)}
 .btn-send:hover{background:var(--tum-d)}
 .btn-send:disabled{opacity:.45;cursor:not-allowed}
+.predict-chip{margin:6px 0;padding:9px 12px;border-radius:10px;background:#eaf2fb;
+  border:1px solid var(--tum,#3070B3);color:var(--tum-d,#0A2D57);font-size:13px;
+  display:flex;align-items:center;gap:8px}
+.predict-chip .pc-text{flex:1}
+.predict-chip button{border:none;border-radius:6px;padding:5px 11px;cursor:pointer;font-size:12px}
+.predict-chip .pc-apply{background:var(--tum,#3070B3);color:#fff}
+.predict-chip .pc-x{background:transparent;color:#789;font-size:15px;padding:2px 7px}
 
 /* ── API-fallback confirmation card (in the chat) ── */
 .cfm-card{align-self:stretch;border:1px solid var(--tum-orange);border-radius:12px;
@@ -1262,6 +1269,7 @@ body{font-family:var(--font);
 
   <div class="chat" id="chat"></div>
   <div class="status" id="status"></div>
+  <div class="predict-chip" id="predict-chip" style="display:none"></div>
 
   <div class="input-row">
     <input id="inp" type="text"
@@ -1282,6 +1290,7 @@ let _activeId  = null;   // server's active pattern (from last poll)
 let _cache     = [];     // last patterns list
 let _knownIds  = new Set();
 let _lastUserText = '';  // the user's last chat message (used for free-form ##TASK## execution)
+let _predictDismissed = '';  // routine_id whose proactive suggestion the user dismissed
 
 /* ── Helpers ────────────────────────────────────────────────────── */
 const chat   = () => document.getElementById('chat');
@@ -1739,6 +1748,26 @@ function send(){
 }
 
 /* ── Live polling: pick up newly detected patterns from the watcher ─ */
+/* ── Proactive next-action suggestion (inline chip) ─────────────────── */
+function hidePredict(){ const c=document.getElementById('predict-chip'); if(c) c.style.display='none'; }
+function dismissPredict(id){ _predictDismissed = id; hidePredict(); }
+async function applyPredict(id){
+  hidePredict();
+  try{ await switchTo(id); }catch(e){}    // open the predicted routine so the user can Execute it
+}
+async function pollPredict(){
+  if(_busy || _executing || _switching){ hidePredict(); return; }   // never interrupt a live turn
+  let data; try{ data = await (await fetch('/api/predict')).json(); }catch(e){ return; }
+  const p = data && data.prediction;
+  const chip = document.getElementById('predict-chip');
+  if(!chip) return;
+  if(!p || !p.headline || p.routine_id === _predictDismissed){ chip.style.display='none'; return; }
+  chip.innerHTML =
+    '<span class="pc-text">💡 '+esc(p.headline)+'</span>'+
+    '<button class="pc-apply" onclick="applyPredict(\''+p.routine_id+'\')">Open routine</button>'+
+    '<button class="pc-x" title="dismiss" onclick="dismissPredict(\''+p.routine_id+'\')">✕</button>';
+  chip.style.display='flex';
+}
 async function pollPatterns(){
   const data = await loadPatterns();
   _knownIds = new Set((data.patterns||[]).map(p=>p.id));
@@ -1769,6 +1798,7 @@ async function init(){
   const mr = document.getElementById('mem-refresh'); if(mr) mr.onclick = loadMemory;
   loadMemory();
   setInterval(pollPatterns, 5000);
+  setInterval(pollPredict, 6000);   // proactive next-action suggestion chip
 }
 
 init();
