@@ -57,11 +57,13 @@ def induce_conditional(examples: list, key: str) -> dict | None:
                     "threshold": thr, "below": lo_v, "atleast": hi_v}
 
     # categorical: every category maps to exactly one value, with >=2 categories AND >=2 distinct
-    # outputs (otherwise it's a constant, not a condition, and would just over-fit each seen category).
+    # outputs AND categories that REPEAT (len(by_ctx) < len(pairs)). The repeat guard is essential: a
+    # key whose every value is distinct (a per-instance identifier like Mark, or a continuous Width) is
+    # NOT a condition — without it the inducer "explains" Frame by Mark (900->D-100, ...), pure overfit.
     by_ctx: dict = {}
     for v, c in pairs:
         by_ctx.setdefault(str(c), set()).add(v)
-    if len(by_ctx) >= 2 and all(len(vs) == 1 for vs in by_ctx.values()):
+    if 2 <= len(by_ctx) < len(pairs) and all(len(vs) == 1 for vs in by_ctx.values()):
         mapping = {c: next(iter(vs)) for c, vs in by_ctx.items()}
         if len(set(mapping.values())) >= 2:
             return {"kind": "conditional", "key": key, "mode": "category", "map": mapping}

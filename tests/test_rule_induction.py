@@ -47,6 +47,17 @@ def test_per_context_sequence_continues_known_group():
     assert ri.apply_rule(rule, {"level": "L3"}) is None        # unseen group -> abstain
 
 
+def test_categorical_rejects_per_instance_identifier():
+    """A key whose every value is distinct (a per-instance id like Mark) is NOT a condition; without
+    the repeat guard the inducer would 'explain' Frame by Mark (900->D-100, ...) — pure overfit."""
+    ex = [_ctx("Standard", mark="D-100"), _ctx("Standard", mark="D-105"),
+          _ctx("Wide", mark="D-110"), _ctx("Wide", mark="D-115")]
+    assert ri.induce_rule(ex) is None
+    # but a categorical whose categories REPEAT is still learned
+    ok = [_ctx("60", rating="fire"), _ctx("60", rating="fire"), _ctx("0", rating="normal"), _ctx("0", rating="normal")]
+    assert ri.induce_rule(ok)["mode"] == "category"
+
+
 def test_one_branch_conditional_is_not_invented():
     ex = [_ctx("Standard", width=900), _ctx("Standard", width=1000), _ctx("Standard", width=1100)]
     assert ri.induce_rule(ex) is None                          # only one value -> no conditional

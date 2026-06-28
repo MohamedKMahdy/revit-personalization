@@ -60,6 +60,22 @@ def test_describe_conditional_rule():
     assert "set Frame by Width" in h["statement"] and "Wide" in h["statement"]
 
 
+def test_describe_multi_sibling_picks_right_rules():
+    """Regression (found by the fake-log harness): with several sibling params the inducer must pick
+    the MEANINGFUL rule per param, not overfit a per-instance identifier."""
+    motif = {"steps": [{"action_type": "SetParam", "param_name": p, "param_value": None,
+                        "param_value_type": "variable"} for p in ("Mark", "Width", "Frame")]}
+    examples = [{"actions": [{"param_name": "Mark", "param_value_after": m},
+                             {"param_name": "Width", "param_value_after": w},
+                             {"param_name": "Frame", "param_value_after": f}]}
+                for m, w, f in [("D-100", "900", "Standard"), ("D-105", "1000", "Standard"),
+                                ("D-110", "1600", "Wide"), ("D-115", "1700", "Wide")]]
+    by = {h["key"]: h["statement"] for h in und.describe_understanding(motif, examples)}
+    assert "in steps of 5" in by["rule:Mark"]            # sequence, not "by Width"
+    assert "set Frame by Width" in by["rule:Frame"]       # the real conditional
+    assert "rule:Width" not in by                         # unpredictable per-instance -> no claim
+
+
 def test_describe_intent():
     m = _seq_motif(); m["intent"] = {"goal": "a tagged door", "trigger": "a door with no Mark"}
     hyps = und.describe_understanding(m, _seq_examples())
