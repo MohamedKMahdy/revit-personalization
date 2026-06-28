@@ -143,3 +143,19 @@ def test_revised_before_baseline_is_seeded_not_emitted():
     }
     recs = project_to_action_records(proj)
     assert [r.action_type for r in recs] == []  # nothing emitted from an orphan REVISED
+
+
+def test_level_name_extracted_from_logged_params():
+    """The element's level (FAMILY_LEVEL_PARAM for hosted families, WALL_BASE_CONSTRAINT for walls)
+    is read into ActionRecord.level_name so per-level conventions can be induced offline from the log."""
+    door = {"eventId": 0, "timestamp": "2026-06-16 00:00:05", "eventType": "CREATED",
+            "element": {"general": {"elementId": "5001", "category": "OST_Doors",
+                                    "family": "M_Door", "type": "S"},
+                        "parameters": {"instance": {"Built-In": {
+                            "FAMILY_LEVEL_PARAM": _bip("ElementId", 0) | {"ValueString": "L2"}}}}}}
+    recs = project_to_action_records({"sessions": [{"sessionId": "s", "events": [door]}]})
+    assert recs[0].action_type == "Place" and recs[0].level_name == "L2"
+    # walls carry the level in WALL_BASE_CONSTRAINT (the existing fixtures use ValueString "100")
+    wall_recs = project_to_action_records({"sessions": [{"sessionId": "s", "events": [
+        _wall_created(7001, "2026-06-16 00:00:05")]}]})
+    assert wall_recs[0].level_name == "100"

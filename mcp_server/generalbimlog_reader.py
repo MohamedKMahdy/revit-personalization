@@ -137,6 +137,30 @@ def _to_int_id(elementId) -> int:
         return 0
 
 
+# Built-In params that carry the element's LEVEL (read for ActionRecord.level_name so per-level
+# conventions — e.g. Mark numbered per floor — can be induced from the logs, offline). The logger
+# records these as ElementId params whose ValueString is the readable level name (e.g. "L1").
+_LEVEL_KEYS = ("FAMILY_LEVEL_PARAM", "WALL_BASE_CONSTRAINT", "SCHEDULE_LEVEL_PARAM",
+               "INSTANCE_REFERENCE_LEVEL_PARAM", "INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM",
+               "LEVEL_PARAM", "ROOM_LEVEL_ID")
+
+
+def _level_name(parameters: dict | None) -> str:
+    """The element's level name from its instance params (first level key present), else ''."""
+    inst = ((parameters or {}).get("instance")) or {}
+    for grp in ("Built-In", "Custom"):
+        g = inst.get(grp) or {}
+        if not isinstance(g, dict):
+            continue
+        for key in _LEVEL_KEYS:
+            pdata = g.get(key)
+            if isinstance(pdata, dict):
+                vs = pdata.get("ValueString")
+                if vs:
+                    return str(vs)
+    return ""
+
+
 def _flatten_instance(parameters: dict | None) -> dict[str, tuple[str, str]]:
     """instance params -> {key: (storage_type, value_string)} across Built-In+Custom."""
     inst = ((parameters or {}).get("instance")) or {}
@@ -182,6 +206,7 @@ def project_to_action_records(project: dict) -> list[ActionRecord]:
             common = dict(
                 session_id=sid, timestamp_unix=ts, timestamp_utc=ev.get("timestamp", ""),
                 element_id=eid, element_category=cat, family_name=fam, type_name=typ,
+                level_name=_level_name(elem.get("parameters")),
             )
 
             if etype == "DELETED":
