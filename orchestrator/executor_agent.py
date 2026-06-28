@@ -185,11 +185,39 @@ EXECUTE_API_TOOL: dict = {
     },
 }
 
+# Read-only introspection of Revit's LIVE warning list (duplicate Mark, unhosted element, overlap, …).
+# Runs the FIXED, audited snippet below via the same send_code_to_revit path in transactionMode 'none'
+# (no transaction, no write) — so the model never authors the code and the call is confirmation-exempt.
+# This makes the self-healing executor able to READ Revit's own failure messages instead of being blind
+# to warnings that a tool reports success on. (Tier 2 will replace this with a first-class plugin command.)
+GET_WARNINGS_CODE = (
+    "var ws = document.GetWarnings();\n"
+    "return ws.Select(w => new {\n"
+    "    description = w.GetDescriptionText(),\n"
+    "    severity = w.GetSeverity().ToString(),\n"
+    "    has_resolution = w.HasResolutions(),\n"
+    "    failing_ids = w.GetFailingElements().Select(id => id.Value).ToList(),\n"
+    "    additional_ids = w.GetAdditionalElements().Select(id => id.Value).ToList()\n"
+    "}).ToList();"
+)
+
+GET_WARNINGS_TOOL: dict = {
+    "name": "get_warnings",
+    "description": (
+        "Read Revit's LIVE warning list (duplicate Mark, unhosted element, overlap, …). Read-only, no "
+        "transaction. Call it after a write to check the element you just placed, or anytime a result "
+        "looks wrong. Warnings are HINTS, not proof of failure — confirm with a read-back."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
 # The full toolset the executor sees = curated ergonomic tools + the entire plugin surface
-# (+ the gated Revit API fallback). send_code_to_revit is never exposed by name; the fallback
-# is the only sanctioned path to it, and only when enabled.
+# (+ the read-only warnings reader + the gated Revit API fallback). send_code_to_revit is never exposed
+# by name; both get_warnings and the fallback are the only sanctioned paths to it (get_warnings is a
+# fixed read), so they ride the same EXECUTOR_ALLOW_API_FALLBACK toggle.
 TOOL_SCHEMAS: list[dict] = (
-    CURATED_SCHEMAS + revit_tools.TOOL_SCHEMAS + ([EXECUTE_API_TOOL] if API_FALLBACK_ENABLED else [])
+    CURATED_SCHEMAS + revit_tools.TOOL_SCHEMAS
+    + ([GET_WARNINGS_TOOL, EXECUTE_API_TOOL] if API_FALLBACK_ENABLED else [])
 )
 ALLOWED_TOOLS = {t["name"] for t in TOOL_SCHEMAS}
 
@@ -264,6 +292,13 @@ YOUR OTHER JOB IS TO SELF-CORRECT ON ERRORS:
 - A structured tool returning an error is EXPECTED and recoverable — stay on the structured tools and
   fix the call. Do NOT respond to a normal place/set/tag/create failure by switching to the Revit API
   fallback; that tool is only for operations no structured tool supports (see below).
+- READ REVIT'S WARNINGS: a tool can report success while Revit is still holding a WARNING against the
+  element (duplicate Mark, unhosted, overlap). After a write — especially place_element / set_parameter
+  on a Mark — call get_warnings to check the element you just touched. Warnings are SIGNALS, not proof
+  of failure: if one names your element (duplicate Mark -> set a unique Mark and re-verify; unhosted ->
+  re-host), fix it; if it's acceptable for the goal, say so explicitly. Never silently ignore an
+  Error-severity warning on the element you just created. get_warnings also surfaces recent dialog
+  pop-ups — if Revit raised one, read it and act on it.
 - After 3 failed attempts on the SAME step, stop and explain what you tried and why you're stuck.
 - If the memory block below contains a "WHAT WENT WRONG BEFORE ON THIS ROUTINE" section, treat it as
   authoritative: those are mistakes you actually made on prior runs. Apply each fix on your FIRST
@@ -393,6 +428,25 @@ def _msg(res: Any) -> str:
     return str(res)
 
 
+def _warnings_from(res) -> dict | None:
+    """Extract {warnings, dialogs} from a get_warnings command response, or None if the command isn't
+    available (so the caller falls back to the read-only snippet). Tolerates the plugin's various
+    envelope shapes (top-level, Response/response, result-as-JSON-string)."""
+    if not isinstance(res, dict) or res.get("error"):
+        return None
+    body = res.get("Response") or res.get("response") or res.get("result") or res
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except (ValueError, TypeError):
+            return None
+    if isinstance(body, dict) and "warnings" in body:
+        w, d = body.get("warnings"), body.get("dialogs")
+        return {"warnings": w if isinstance(w, list) else [],
+                "dialogs": d if isinstance(d, list) else []}
+    return None
+
+
 def real_dispatch(name: str, args: dict) -> dict:
     """Execute one tool against the live Revit plugin. Returns a normalized result."""
     from mcp_server import revit_bridge as rb
@@ -482,6 +536,35 @@ def real_dispatch(name: str, args: dict) -> dict:
             r = res.get("Response") or {}
             return {"success": True, "message": "picked", "location": {"x": r.get("x"), "y": r.get("y"), "z": r.get("z")}}
         return {"success": False, "message": _msg(res) or "pick cancelled"}
+
+    # Read-only introspection: Revit's live warnings/errors + recent dialog pop-ups. Prefer the
+    # DEDICATED plugin command (reliable external-event path, post-rebuild); fall back to the fixed
+    # send_code_to_revit snippet if that command isn't deployed yet. Either way the model never authors
+    # code and nothing is written — so the loop + verifier can react to what Revit is flagging.
+    if name == "get_warnings":
+        try:
+            parsed = _warnings_from(rb._call_plugin("get_warnings", {}))
+        except Exception:
+            parsed = None
+        if parsed is None:                              # fallback: fixed read-only snippet
+            try:
+                snip = rb._call_plugin("send_code_to_revit",
+                                       {"code": GET_WARNINGS_CODE, "transactionMode": "none"}, timeout=8)
+            except Exception:
+                snip = None
+            if isinstance(snip, dict) and not snip.get("error") and snip.get("success", True):
+                raw = snip.get("result")
+                try:
+                    w = json.loads(raw) if isinstance(raw, str) else raw
+                except (ValueError, TypeError):
+                    w = None
+                if isinstance(w, list):
+                    parsed = {"warnings": w, "dialogs": []}
+        if parsed is None:
+            return {"success": False, "warnings": [], "dialogs": [],
+                    "message": "could not read warnings (dedicated command not deployed; API path unavailable)"}
+        return {"success": True, "warnings": parsed["warnings"], "dialogs": parsed["dialogs"],
+                "message": f"{len(parsed['warnings'])} warning(s), {len(parsed['dialogs'])} dialog(s)"}
 
     # Gated Revit API fallback — compile + run a C# snippet against the live Document via the
     # plugin's send_code_to_revit. Transactional (auto) so a bad snippet rolls back + is undoable.
@@ -1193,7 +1276,23 @@ def verify_outcome(param_values: dict, placed_id, dispatch_fn: Callable[[str, di
             actual[row["name"]] = "" if row.get("value") is None else str(row["value"])
     issues = [f"'{n}' reads back {actual.get(n)!r}, expected {str(v)!r}"
               for n, v in pv.items() if n in actual and actual[n] != str(v)]
-    return {"ok": not issues, "issues": issues, "actual": actual}
+    # Surface Revit's OWN warnings on the placed element (advisory). A warning is not proof the value is
+    # wrong, so it doesn't flip ok by itself — but an Error-severity warning naming THIS element is a
+    # genuine problem and is escalated to an issue.
+    warnings: list = []
+    try:
+        w = dispatch_fn("get_warnings", {})
+        if isinstance(w, dict) and w.get("success"):
+            pid = str(placed_id)
+            for warn in (w.get("warnings") or []):
+                ids = {str(i) for i in (warn.get("failing_ids") or []) + (warn.get("additional_ids") or [])}
+                if pid in ids:
+                    warnings.append(warn)
+                    if str(warn.get("severity", "")).lower() == "error":
+                        issues.append(f"Revit error on this element: {warn.get('description')}")
+    except Exception:
+        pass
+    return {"ok": not issues, "issues": issues, "actual": actual, "warnings": warnings}
 
 
 def build_freeform_goal(task: str, context: str = "") -> str:

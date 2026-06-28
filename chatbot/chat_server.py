@@ -1006,7 +1006,7 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         # OUTCOME VERIFIER: read the params BACK and confirm they actually stuck; on a mismatch, one
         # deterministic repair (re-set the off params) + re-verify, all reported in the stream.
         if result.get("done") and eid is not None and param_values:
-            v = await asyncio.to_thread(verify_outcome, param_values, eid)
+            v = await asyncio.to_thread(verify_outcome, param_values, eid, real_dispatch)
             if not v["ok"]:
                 yield ("data: " + json.dumps({"kind": "reasoning",
                        "payload": "Verifying outcome — some values didn't stick: " + "; ".join(v["issues"])
@@ -1014,7 +1014,7 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
                 for nm in [n for n, val in param_values.items() if str(v["actual"].get(n)) != str(val)]:
                     await asyncio.to_thread(real_dispatch, "set_parameter",
                                             {"element_id": eid, "name": nm, "value": str(param_values[nm])})
-                v2 = await asyncio.to_thread(verify_outcome, param_values, eid)
+                v2 = await asyncio.to_thread(verify_outcome, param_values, eid, real_dispatch)
                 yield ("data: " + json.dumps({"kind": "result", "payload": {"name": "verify_outcome",
                        "result": {"success": v2["ok"], "message": "all values verified" if v2["ok"]
                                   else "still off: " + "; ".join(v2["issues"])}}}) + "\n\n")

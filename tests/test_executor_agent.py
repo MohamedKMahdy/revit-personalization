@@ -302,6 +302,8 @@ def test_tag_category_mapping():
 def test_verify_outcome_reads_back_params():
     """The verifier flags a param that didn't actually stick, and passes when values match."""
     def good(tool, args):
+        if tool == "get_warnings":
+            return {"success": True, "warnings": [], "dialogs": []}
         assert tool == "get_element_parameters"
         return {"success": True, "response": [{"name": "Mark", "value": "D-05"},
                                               {"name": "Comments", "value": "reviewed"}]}
@@ -317,6 +319,41 @@ def test_verify_outcome_reads_back_params():
     assert ex.verify_outcome({"Mark": "x"}, None, dispatch_fn=good)["ok"] is True
     assert ex.verify_outcome({}, 900, dispatch_fn=good)["ok"] is True
     assert ex.verify_outcome({"Mark": "x"}, 900, dispatch_fn=lambda *a: (_ for _ in ()).throw(RuntimeError()))["ok"] is True
+
+
+def test_warnings_from_parses_envelopes():
+    f = ex._warnings_from
+    assert f({"Response": {"warnings": [{"description": "dup"}], "dialogs": []}})["warnings"][0]["description"] == "dup"
+    assert f({"warnings": [], "dialogs": [{"message": "x"}]})["dialogs"][0]["message"] == "x"
+    assert f({"result": '{"warnings": [{}], "dialogs": []}'})["warnings"] == [{}]   # JSON-string body
+    assert f({"error": "MethodNotFound"}) is None       # command not deployed -> fall back to snippet
+    assert f("nope") is None
+    assert f({"something": 1}) is None                   # no warnings key -> None
+
+
+def test_verify_outcome_surfaces_warnings():
+    """A Revit warning on the placed element is reported (advisory); an Error on it becomes an issue."""
+    def disp(tool, args):
+        if tool == "get_element_parameters":
+            return {"success": True, "response": [{"name": "Mark", "value": "D-05"}]}
+        if tool == "get_warnings":
+            return {"success": True, "dialogs": [], "warnings": [
+                {"description": "duplicate Mark", "severity": "Warning", "failing_ids": [900]},
+                {"description": "elsewhere", "severity": "Error", "failing_ids": [111]}]}
+        return {"success": True}
+    v = ex.verify_outcome({"Mark": "D-05"}, 900, dispatch_fn=disp)
+    assert v["ok"] is True                               # a Warning alone does NOT flip ok
+    assert len(v["warnings"]) == 1 and "duplicate Mark" in v["warnings"][0]["description"]
+
+    def disp_err(tool, args):
+        if tool == "get_element_parameters":
+            return {"success": True, "response": [{"name": "Mark", "value": "D-05"}]}
+        if tool == "get_warnings":
+            return {"success": True, "dialogs": [], "warnings": [
+                {"description": "bad join", "severity": "Error", "failing_ids": [900]}]}
+        return {"success": True}
+    v2 = ex.verify_outcome({"Mark": "D-05"}, 900, dispatch_fn=disp_err)
+    assert v2["ok"] is False and any("Revit error" in i for i in v2["issues"])
 
 
 def test_real_dispatch_query_tools(monkeypatch):
