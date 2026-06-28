@@ -71,6 +71,24 @@ def test_describe_empty_when_nothing_inducible():
     assert und.describe_understanding({"steps": [{"action_type": "Place", "family_name": "M_Door"}]}, []) == []
 
 
+def test_describe_survives_malformed_records():
+    """Corrupt/hand-edited records must not crash describe_understanding."""
+    assert und.describe_understanding({"steps": [None, "junk", {"action_type": "Place"}]}, ["bad", None]) == []
+    assert und.describe_understanding("not a dict", None) == []
+
+
+def test_describe_threshold_matches_executed_cut():
+    """The rendered threshold must equal the executed cut (no int() truncation that flips the boundary)."""
+    motif = {"steps": [{"action_type": "SetParam", "param_name": "Frame",
+                        "param_value": None, "param_value_type": "variable"}]}
+    # widths 1100/1200 (Standard) vs 1500/1600 (Wide) -> midpoint 1350.0 -> integer-valued -> "1350"
+    ex = [{"actions": [{"param_name": "Frame", "param_value_after": v},
+                       {"param_name": "Width", "param_value_after": w}]}
+          for v, w in [("Standard", "1100"), ("Standard", "1200"), ("Wide", "1500"), ("Wide", "1600")]]
+    h = next(x for x in und.describe_understanding(motif, ex) if x["key"] == "rule:Frame")
+    assert "1350" in h["statement"] and "1350.0" not in h["statement"]
+
+
 # ── memory: confirm / correct / auto-demote / render ────────────────────────────────
 def test_confirm_renders_into_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "m.json")
@@ -114,29 +132,74 @@ def test_log_understanding_appends(tmp_path):
 
 
 # ── reflection: cross-routine generalization into the user prior (Stage 4) ──────────
+def _confirm_per_level(mem, rid):
+    pm.record_understanding(mem, rid, [{"key": "rule:Mark", "fingerprint": "pcs:level:L1,L2",
+                                        "statement": "You number Mark per level — each restarts its own sequence.",
+                                        "kind": "rule"}])
+    pm.confirm_understanding(mem, rid, "rule:Mark", True)
+
+
 def test_reflect_promotes_understanding_confirmed_across_routines(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "m.json")
     monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
     mem = pm.load()
     for rid in ("r1", "r2"):
-        pm.record_understanding(mem, rid, [{"key": "rule:Mark",
-                                            "statement": "You number Mark per level — each level restarts its own sequence.",
-                                            "kind": "rule"}])
-        pm.confirm_understanding(mem, rid, "rule:Mark", True)
-    added = pm.reflect(mem)
-    assert len(added) == 1 and "per context" in added[0]
-    # the generalization is now a user-profile note -> flows into EVERY routine's prompt
-    assert "per context" in pm.user_block(mem)
-    assert pm.reflect(mem) == []                                 # idempotent
+        _confirm_per_level(mem, rid)
+    refl = pm.reflect(mem)
+    assert len(refl["added"]) == 1 and "per context" in refl["added"][0]
+    assert "per context" in pm.user_block(mem)                  # flows into EVERY routine's prompt
+    assert pm.reflect(mem)["added"] == []                       # idempotent
 
 
 def test_reflect_needs_multiple_routines(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "m.json")
     monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
     mem = pm.load()
-    pm.record_understanding(mem, "r1", [{"key": "rule:Mark", "statement": "You number Mark sequentially.", "kind": "rule"}])
+    _confirm_per_level(mem, "r1")
+    assert pm.reflect(mem)["added"] == []                       # one routine -> no generalization
+
+
+def test_reflect_retracts_when_support_drops(tmp_path, monkeypatch):
+    """A cross-routine prior must be RETRACTED when its supporting understanding is later demoted."""
+    monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "m.json")
+    monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
+    mem = pm.load()
+    for rid in ("r1", "r2"):
+        _confirm_per_level(mem, rid)
+    note = pm.reflect(mem)["added"][0]
+    # demote r2's understanding (correct it twice) -> support drops below threshold
+    pm.confirm_understanding(mem, "r2", "rule:Mark", False, "no, per zone")
+    pm.confirm_understanding(mem, "r2", "rule:Mark", False, "actually per room")
+    refl = pm.reflect(mem)
+    assert note in refl["retracted"]
+    assert "per context" not in pm.user_block(mem)             # no longer applied
+
+
+def test_reflect_ignores_free_text_corrections(tmp_path, monkeypatch):
+    """Honesty: a vague free-text correction is applied per-routine but never promoted to a prior."""
+    monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "m.json")
+    monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
+    mem = pm.load()
+    for rid in ("r1", "r2"):
+        pm.record_understanding(mem, rid, [{"key": "rule:Mark", "statement": "guess", "kind": "rule"}])
+        pm.confirm_understanding(mem, rid, "rule:Mark", False, "it varies by room and is set per zone")
+    assert pm.reflect(mem)["added"] == []                       # corrected (not confirmed) -> no prior
+
+
+def test_record_understanding_resets_confirmed_on_rule_change(tmp_path, monkeypatch):
+    """A confirmed flag must not carry over to a structurally DIFFERENT re-induced rule."""
+    monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "m.json")
+    monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
+    mem = pm.load()
+    pm.record_understanding(mem, "r1", [{"key": "rule:Mark", "statement": "step 1", "kind": "rule",
+                                         "fingerprint": "seq:1:D-|:3"}])
     pm.confirm_understanding(mem, "r1", "rule:Mark", True)
-    assert pm.reflect(mem) == []                                 # one routine -> no generalization
+    assert "CONFIRMED" in pm.understanding_block(mem, "r1")
+    # the rule now induces differently (step 5) -> must drop back to proposed (re-confirm needed)
+    pm.record_understanding(mem, "r1", [{"key": "rule:Mark", "statement": "step 5", "kind": "rule",
+                                         "fingerprint": "seq:5:D-|:3"}])
+    assert mem["routines"]["r1"]["understanding"]["rule:Mark"]["status"] == "proposed"
+    assert pm.understanding_block(mem, "r1") == ""
 
 
 # ── endpoints ───────────────────────────────────────────────────────────────────────

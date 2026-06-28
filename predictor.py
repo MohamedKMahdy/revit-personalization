@@ -41,7 +41,8 @@ class Prediction:
         verb = {"Place": "place", "SetParam": "set", "Tag": "tag with"}.get(nxt["action_type"], nxt["action_type"])
         what = nxt.get("key") or "it"
         more = f" (+{len(self.next_actions) - 1} more)" if len(self.next_actions) > 1 else ""
-        why = f" to {self.goal}" if self.goal else ""
+        # the goal is an INFERRED, unconfirmed hypothesis — hedge it ("looks like…?"), never assert it
+        why = f" (looks like: {self.goal}?)" if self.goal else ""
         return f"You usually {verb} {what} next{more}{why} — apply your usual '{self.routine_label}'?"
 
 

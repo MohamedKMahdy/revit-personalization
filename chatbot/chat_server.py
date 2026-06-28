@@ -1253,18 +1253,22 @@ async def api_memory_forget(body: ForgetIn):
 async def api_understanding(pattern_id: str = ""):
     """What the agent thinks it UNDERSTANDS about a routine (induced rules + intent) with the user's
     confirmation status — the data behind the mixed-initiative 'is this right?' panel."""
-    rec = _patterns.get(pattern_id)
-    if not rec:
-        return {"understanding": []}
-    from orchestrator.understanding import describe_understanding
-    hyps = describe_understanding(rec.get("motif") or {}, rec.get("examples") or [])
-    mem = pm.load()
-    pm.record_understanding(mem, pattern_id, hyps, rec.get("label", ""))
-    pm.save(mem)
-    stored = (mem.get("routines", {}).get(pattern_id) or {}).get("understanding") or {}
-    out = [{**h, "status": (stored.get(h["key"]) or {}).get("status", "proposed"),
-            "correction": (stored.get(h["key"]) or {}).get("correction", "")} for h in hyps]
-    return {"understanding": out}
+    try:
+        rec = _patterns.get(pattern_id)
+        if not rec:
+            return {"understanding": []}
+        from orchestrator.understanding import describe_understanding
+        hyps = describe_understanding(rec.get("motif") or {}, rec.get("examples") or [])
+        mem = pm.load()
+        pm.record_understanding(mem, pattern_id, hyps, rec.get("label", ""))
+        pm.save(mem)
+        stored = (mem.get("routines", {}).get(pattern_id) or {}).get("understanding") or {}
+        out = [{"key": h["key"], "statement": h["statement"], "kind": h.get("kind", "rule"),
+                "status": (stored.get(h["key"]) or {}).get("status", "proposed"),
+                "correction": (stored.get(h["key"]) or {}).get("correction", "")} for h in hyps]
+        return {"understanding": out}
+    except Exception as exc:                              # corrupt/hand-edited record -> degrade, never 500
+        return {"understanding": [], "error": str(exc)[:160]}
 
 
 class UnderstandingConfirmIn(BaseModel):
@@ -1286,16 +1290,17 @@ async def api_understanding_confirm(body: UnderstandingConfirmIn):
     mem = pm.load()
     status = pm.confirm_understanding(mem, pid, key, bool(body.accepted),
                                       (body.correction or "").strip(), rec.get("label", ""))
-    generalized = pm.reflect(mem)            # promote cross-routine understanding into the user prior
+    refl = pm.reflect(mem)                   # reconcile cross-routine understanding into the user prior
     pm.save(mem)
     from orchestrator.understanding import log_understanding
     from datetime import date
     today = date.today().isoformat()
     ledger = [{"key": key, "status": status, "accepted": bool(body.accepted),
                "correction": (body.correction or "").strip(), "date": today}]
-    ledger += [{"key": "generalization", "status": "generalized", "note": g, "date": today} for g in generalized]
+    ledger += [{"key": "generalization", "status": "generalized", "note": g, "date": today} for g in refl["added"]]
+    ledger += [{"key": "generalization", "status": "retracted", "note": g, "date": today} for g in refl["retracted"]]
     log_understanding(pid, ledger)
-    return {"ok": True, "status": status, "generalized": generalized}
+    return {"ok": True, "status": status, "generalized": refl["added"], "retracted": refl["retracted"]}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1769,13 +1774,25 @@ async function loadUnderstanding(id){
   panel.style.display = 'none'; panel.innerHTML = '';
   let data; try{ data = await (await fetch('/api/understanding?pattern_id=' + encodeURIComponent(id))).json(); }
   catch(e){ return; }
-  const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
   const pending = ((data && data.understanding) || []).filter(h => h.status === 'proposed' || h.status === 'corrected');
   if(!pending.length) return;
-  panel.innerHTML = '<div class="u-hd">🧠 Did I understand this right?</div>' + pending.map(h =>
-    `<div class="u-row"><div class="u-stmt">${esc(h.statement)}</div><div class="u-act">`
-    + `<button onclick="confirmU('${id}','${esc(h.key)}',true)">✓ Yes</button>`
-    + `<button onclick="correctU('${id}','${esc(h.key)}')">✎ Not quite</button></div></div>`).join('');
+  const hd = document.createElement('div'); hd.className = 'u-hd';
+  hd.textContent = '🧠 Did I understand this right?';
+  panel.appendChild(hd);
+  // build DOM nodes (textContent + closures over h.key) so param names with quotes can't break markup
+  pending.forEach(h => {
+    const row = document.createElement('div'); row.className = 'u-row';
+    const stmt = document.createElement('div'); stmt.className = 'u-stmt';
+    stmt.textContent = (h.status === 'corrected' && h.correction)
+      ? ('You corrected this to: ' + h.correction) : h.statement;
+    const act = document.createElement('div'); act.className = 'u-act';
+    const yes = document.createElement('button'); yes.textContent = '✓ Yes';
+    yes.addEventListener('click', () => confirmU(id, h.key, true));
+    const no = document.createElement('button'); no.textContent = '✎ Not quite';
+    no.addEventListener('click', () => correctU(id, h.key));
+    act.appendChild(yes); act.appendChild(no);
+    row.appendChild(stmt); row.appendChild(act); panel.appendChild(row);
+  });
   panel.style.display = 'block';
 }
 async function confirmU(pid, key, accepted, correction){

@@ -75,10 +75,10 @@ def test_prediction_carries_intent_and_states_the_why():
     p = pred.predict(_door_actions()[:1], intents=intents)
     assert p.goal == "keep the door schedule complete"
     assert p.trigger == "a door placed with no Mark"
-    assert "to keep the door schedule complete" in p.headline
+    assert "looks like: keep the door schedule complete" in p.headline    # hedged, not asserted
     # without intent, the headline still works (no WHY clause)
     p2 = pred.predict(_door_actions()[:1])
-    assert p2.goal == "" and "to keep the door schedule" not in p2.headline
+    assert p2.goal == "" and "looks like" not in p2.headline
 
 
 def test_current_prefix_picks_in_progress_episode():

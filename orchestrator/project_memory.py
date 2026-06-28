@@ -83,6 +83,7 @@ def _coerce(mem: dict) -> dict:
     u.setdefault("preferences", [])
     u.setdefault("conventions", {})
     u.setdefault("notes", [])
+    u.setdefault("generalizations", [])     # auto-promoted cross-routine priors (project_memory.reflect)
     if mem.get("preferences"):                       # migrate legacy global shape
         for p in mem.pop("preferences"):
             if p not in u["preferences"]:
@@ -322,16 +323,26 @@ DEMOTE_AFTER_CORRECTIONS = 2
 
 
 def record_understanding(mem: dict, routine_id: str, hypotheses: list, label: str = "") -> None:
-    """Store/refresh proposed hypotheses (new keys start 'proposed'; existing status is preserved)."""
+    """Store/refresh proposed hypotheses. New keys start 'proposed'. For an existing key we refresh the
+    wording, but if the underlying rule's STRUCTURE changed (fingerprint differs — e.g. step 1 became
+    step 5, or a threshold moved), we RESET status to 'proposed' and clear the stale correction so a
+    confirmed flag is never applied to a structurally different rule (re-confirmation required)."""
     u = routine_mem(mem, routine_id, label).setdefault("understanding", {})
     for h in hypotheses:
         cur = u.get(h["key"])
+        fp = h.get("fingerprint", "")
         if cur is None:
             u[h["key"]] = {"statement": h["statement"], "kind": h.get("kind", "rule"),
-                           "status": "proposed", "correction": "", "corrections_seen": 0}
+                           "fingerprint": fp, "status": "proposed", "correction": "", "corrections_seen": 0}
         else:
-            cur["statement"] = h["statement"]               # refresh wording; keep status/correction
+            structurally_changed = cur.get("fingerprint", "") != fp
+            cur["statement"] = h["statement"]
             cur["kind"] = h.get("kind", cur.get("kind", "rule"))
+            cur["fingerprint"] = fp
+            if structurally_changed and cur.get("status") != "proposed":
+                cur["status"] = "proposed"                  # the rule changed -> needs re-confirmation
+                cur["correction"] = ""
+                cur["corrections_seen"] = 0
 
 
 def confirm_understanding(mem: dict, routine_id: str, key: str, accepted: bool,
@@ -392,25 +403,35 @@ def _understanding_signature(statement: str) -> str | None:
     return None
 
 
-def reflect(mem: dict) -> list:
-    """Promote understanding confirmed/corrected across >= MIN_ROUTINES_FOR_GENERALIZATION routines
-    into user-profile notes (rendered for every routine by user_block). Returns the notes newly added."""
+def _generalization_note(sig: str) -> str:
+    return f"Across your routines, you consistently {sig} — apply this to new routines too."
+
+
+def reflect(mem: dict) -> dict:
+    """RECONCILE (add AND retract) cross-routine generalizations. A signature CONFIRMED in
+    >= MIN_ROUTINES_FOR_GENERALIZATION routines becomes a generalization; one that no longer meets the
+    bar (e.g. after demotions/rejections) is retracted. Stored in a dedicated user['generalizations']
+    list (segregated from manual notes) so pruning never clobbers user-authored notes, and rendered by
+    user_block. Returns {'added': [...], 'retracted': [...]}.
+
+    Honesty guards (review-hardened): only status=='confirmed' evidence counts (free-text corrections
+    are applied per-routine but never promoted to a confident user-wide prior), and the signature is
+    derived from the agent-generated STATEMENT, never from the free-text correction string."""
     tally: dict = {}
     for rid, r in (mem.get("routines", {}) or {}).items():
         for e in (r.get("understanding") or {}).values():
-            if e.get("status") in ("confirmed", "corrected"):
-                sig = _understanding_signature(e.get("correction") or e.get("statement"))
+            if e.get("status") == "confirmed":
+                sig = _understanding_signature(e.get("statement"))
                 if sig:
                     tally.setdefault(sig, set()).add(rid)
-    added: list = []
-    notes = mem.setdefault("user", {}).setdefault("notes", [])
-    for sig, rids in tally.items():
-        if len(rids) >= MIN_ROUTINES_FOR_GENERALIZATION:
-            note = f"Across your routines, you consistently {sig} — apply this to new routines too."
-            if note not in notes:
-                notes.append(note)
-                added.append(note)
-    return added
+    supported = {_generalization_note(sig) for sig, rids in tally.items()
+                 if len(rids) >= MIN_ROUTINES_FOR_GENERALIZATION}
+    gens = mem.setdefault("user", {}).setdefault("generalizations", [])
+    before = set(gens)
+    added = sorted(supported - before)
+    retracted = sorted(before - supported)
+    gens[:] = sorted(supported)
+    return {"added": added, "retracted": retracted}
 
 
 # ── Rendering into context ────────────────────────────────────────────────────────
@@ -431,6 +452,9 @@ def user_block(mem: dict) -> str:
         lines.append("Conventions: " + ", ".join(f"{k} = {v}" for k, v in u["conventions"].items()))
     if u.get("notes"):
         lines.append("Notes: " + "; ".join(u["notes"]))
+    if u.get("generalizations"):
+        lines.append("Cross-routine conventions (learned across your routines): "
+                     + "; ".join(u["generalizations"]))
     if not lines:
         return ""
     return ("WHO YOU'RE WORKING WITH (persistent per-user memory — apply it, and respect the "

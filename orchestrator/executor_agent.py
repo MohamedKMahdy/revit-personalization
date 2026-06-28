@@ -648,9 +648,13 @@ def _example_contexts(examples: list, pn: str) -> list:
     def _c(v):
         return None if v is None or str(v).strip().lower() in ("", "none", "null") else v
     rows = []
-    for e in (examples or []):
+    for e in (examples if isinstance(examples, list) else []):
+        if not isinstance(e, dict):
+            continue                                       # tolerate corrupted/hand-edited records
         val, ctx = None, {}
         for a in (e.get("actions") or []):
+            if not isinstance(a, dict):
+                continue
             an, av = a.get("param_name"), _c(a.get("param_value_after") or a.get("param_value"))
             if an == pn:
                 if av is not None:

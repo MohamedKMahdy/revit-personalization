@@ -150,6 +150,10 @@ def _fmt(v) -> str:
 
 
 def main() -> None:
+    try:                                   # the table uses '↳' which the Windows cp1252 console rejects
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     rows = run()
     print("=" * 96)
     print("UNDERSTANDING vs DETECTION  —  held-out generalization (deterministic, $0)")
