@@ -1038,6 +1038,14 @@ async def api_execute_smart(body: ExecuteIn = ExecuteIn()):
         except Exception:
             pass
 
+        # A chat-typed param value (##PARAM:Mark=101##) is ONE-SHOT: "this placement", not a permanent
+        # pin. learn_from_run just recorded it into last_values, so the SEQUENCE now continues from it
+        # (101 -> 102 -> 103). Clear it so the next placement isn't forced to the same value forever
+        # (the bug behind "you made the mark 101, it should be 102").
+        if result.get("done") and rec.get("param_overrides"):
+            rec["param_overrides"] = {}
+            _save_history()
+
         yield ("data: " + json.dumps({"kind": "final", "payload": {
             "done": result.get("done"), "summary": result.get("summary"),
             "attempts": result.get("attempts")}}) + "\n\n")

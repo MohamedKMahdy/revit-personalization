@@ -42,7 +42,8 @@ def test_execute_smart_compiles_then_replays_without_the_agent(client, monkeypat
         {"action_type": "SetParam", "param_name": "Mark", "param_value": None, "param_value_type": "variable"},
         {"action_type": "Tag", "tag_family_name": "M_Door Tag"}]}
     cs._patterns[rid] = {"id": rid, "label": "Door", "status": "new", "motif": motif,
-                         "examples": [], "history": [], "pending_location": {"x": 1, "y": 2, "z": 0}}
+                         "examples": [], "history": [], "pending_location": {"x": 1, "y": 2, "z": 0},
+                         "param_overrides": {"Mark": "D-99"}}   # a chat-typed value: must be ONE-SHOT
     # memory: a known host wall + a last Mark, so the replay's holes (location/host_wall/Mark) all bind
     m = pm.load(); r = pm.routine_mem(m, rid, "Door")
     r["last_host_wall_id"] = 777; r["last_values"] = {"Mark": "D-00"}; pm.save(m)
@@ -79,5 +80,9 @@ def test_execute_smart_compiles_then_replays_without_the_agent(client, monkeypat
         assert calls["agent"] == 1                               # agent did NOT run again
         assert any(t == "place_element" for t, _ in dispatched)  # replayed through real_dispatch
         assert any(t == "tag_element" for t, _ in dispatched)
+
+        # one-shot override: the chat-typed Mark must be CLEARED after a done run so the next
+        # placement increments instead of being pinned forever (the "Mark stuck at 101" bug)
+        assert cs._patterns[rid].get("param_overrides") == {}
     finally:
         cs._patterns.pop(rid, None)
