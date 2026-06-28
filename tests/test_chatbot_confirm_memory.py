@@ -29,6 +29,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "MEM_ROOT", tmp_path / "users")
     monkeypatch.setattr(pm, "MEM_PATH", tmp_path / "users" / "u" / "memory.json")
     monkeypatch.setattr(pm, "LEGACY_PATH", tmp_path / "none.json")
+    monkeypatch.setattr(cs, "HISTORY_PATH", tmp_path / "pattern_history.json")
     cs._pending_confirms.clear()
     return TestClient(cs.app)
 

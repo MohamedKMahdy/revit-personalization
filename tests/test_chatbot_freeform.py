@@ -32,6 +32,7 @@ def client(tmp_path, monkeypatch):
     # isolate the executor logs so tests never pollute the real executor_runs/transcripts files
     monkeypatch.setattr(cs, "_EXECUTOR_LOG", tmp_path / "runs.jsonl")
     monkeypatch.setattr(cs, "_EXECUTOR_TRANSCRIPT", tmp_path / "transcripts.jsonl")
+    monkeypatch.setattr(cs, "HISTORY_PATH", tmp_path / "pattern_history.json")
     return TestClient(cs.app)
 
 

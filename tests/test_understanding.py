@@ -83,6 +83,14 @@ def test_describe_intent():
     assert {"rule:Mark", "intent:goal", "intent:trigger"} <= keys
 
 
+def test_describe_intent_normalizes_punctuation():
+    """Found live (Gemini intent): no double period, no 'fire when When …'."""
+    m = {"steps": [], "intent": {"goal": "a tagged door.", "trigger": "When a door has no Mark."}}
+    by = {h["key"]: h["statement"] for h in und.describe_understanding(m, [])}
+    assert by["intent:goal"] == "This routine's goal: a tagged door."
+    assert by["intent:trigger"] == "It should fire when a door has no Mark."
+
+
 def test_describe_empty_when_nothing_inducible():
     assert und.describe_understanding({"steps": [{"action_type": "Place", "family_name": "M_Door"}]}, []) == []
 
@@ -227,6 +235,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(und, "LEDGER_PATH", tmp_path / "ledger.jsonl")
     monkeypatch.setattr(cs, "_EXECUTOR_LOG", tmp_path / "runs.jsonl")
     monkeypatch.setattr(cs, "_EXECUTOR_TRANSCRIPT", tmp_path / "transcripts.jsonl")
+    monkeypatch.setattr(cs, "HISTORY_PATH", tmp_path / "pattern_history.json")
     return TestClient(cs.app)
 
 

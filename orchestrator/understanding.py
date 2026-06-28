@@ -104,12 +104,16 @@ def describe_understanding(motif: dict, examples: list | None = None) -> list:
         if stmt:
             out.append({"key": f"rule:{pn}", "statement": stmt, "kind": "rule", "fingerprint": fp})
     intent = (motif.get("intent") if isinstance(motif, dict) else None) or {}
-    if intent.get("goal"):
-        out.append({"key": "intent:goal", "statement": f"This routine's goal: {intent['goal']}.",
-                    "kind": "intent", "fingerprint": f"goal:{intent['goal']}"})
-    if intent.get("trigger"):
-        out.append({"key": "intent:trigger", "statement": f"It should fire when {intent['trigger']}.",
-                    "kind": "intent", "fingerprint": f"trigger:{intent['trigger']}"})
+    goal = (intent.get("goal") or "").strip().rstrip(".").strip()
+    trig = (intent.get("trigger") or "").strip().rstrip(".").strip()
+    if trig[:5].lower() == "when ":                    # avoid "It should fire when When …"
+        trig = trig[5:].strip()
+    if goal:
+        out.append({"key": "intent:goal", "statement": f"This routine's goal: {goal}.",
+                    "kind": "intent", "fingerprint": f"goal:{goal}"})
+    if trig:
+        out.append({"key": "intent:trigger", "statement": f"It should fire when {trig}.",
+                    "kind": "intent", "fingerprint": f"trigger:{trig}"})
     return out
 
 
