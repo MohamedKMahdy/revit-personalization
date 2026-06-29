@@ -454,6 +454,26 @@ def _resolve_type_id(family_name: str, type_name: str | None = None,
         return None, category
 
 
+def _family_match(family_name: str, category: str | None) -> dict:
+    """For a routine whose family isn't loaded in THIS model: the closest loaded family in the category.
+    {best: row|None, score, available: [family names]}. Score = shared lowercased tokens (0 = unrelated),
+    so the caller can auto-substitute a real match vs. listing options/asking when nothing is close."""
+    from mcp_server import revit_bridge as rb
+    cats = [category] if category else _PLACEABLE_CATEGORIES
+    res = rb._call_plugin("get_available_family_types", {"categoryList": cats})
+    rows = res if isinstance(res, list) else []
+    want = set(re.findall(r"[a-z0-9]+", (family_name or "").lower()))
+
+    def score(r):
+        fam = set(re.findall(r"[a-z0-9]+", (r.get("FamilyName") or "").lower()))
+        typ = set(re.findall(r"[a-z0-9]+", (r.get("TypeName") or "").lower()))
+        return len(want & fam) + 0.5 * len(want & typ)
+
+    best = max(rows, key=score) if rows else None
+    return {"best": best, "score": (score(best) if best else 0),
+            "available": sorted({(r.get("FamilyName") or "") for r in rows})[:12]}
+
+
 # Element category -> its TAG category. The plugin's tag_element auto-find is broken (it compares the
 # tag family's category to the ELEMENT's category, which never match — a door tag is OST_DoorTags, the
 # door is OST_Doors), so we resolve the tag type id ourselves and pass it, like place_element's typeId.
@@ -535,17 +555,27 @@ def real_dispatch(name: str, args: dict) -> dict:
         # by name — sending a name created 0 elements every time). This is what makes placement work.
         type_id, cat = _resolve_type_id(args.get("family_name"), args.get("type_name"),
                                         args.get("category"))
-        if type_id is None and not cat:
-            return {"success": False,
-                    "message": (f"family '{args.get('family_name')}' is not loaded "
-                                "(no matching type found). Call get_available_family_types for the "
-                                "right category and place a family that is actually loaded.")}
+        substitute = None
+        if type_id is None:
+            # The routine's family isn't loaded in THIS model (routines are learned per-model). Map to the
+            # CLOSEST loaded family instead of placing a blind default (which silently rolls back) or
+            # thrashing through retries. If nothing is close, list the options / ask — don't guess.
+            m = _family_match(args.get("family_name"), cat or args.get("category"))
+            if m["best"] and m["best"].get("FamilyTypeId") is not None and m["score"] > 0:
+                type_id = int(m["best"]["FamilyTypeId"])
+                cat = m["best"].get("Category") or cat or args.get("category")
+                substitute = m["best"].get("FamilyName")
+            else:
+                avail = m["available"]
+                return {"success": False, "message":
+                        f"family '{args.get('family_name')}' is not loaded in this model" +
+                        (f"; loaded families here are {avail} — place one of those (place_element with that "
+                         "family_name) or ask the user to load the family." if avail
+                         else "; no placeable families in this category — ask the user to load the family.")}
         data: dict = {
             "locationPoint": {"x": loc.get("x", 0), "y": loc.get("y", 0), "z": loc.get("z", 0)},
-            "baseLevel": 0, "baseOffset": 0,
+            "baseLevel": 0, "baseOffset": 0, "typeId": type_id,
         }
-        if type_id is not None:
-            data["typeId"] = type_id            # resolved family/type id — the field the plugin reads
         if cat:
             data["category"] = cat
         if args.get("host_wall_id"):
@@ -553,7 +583,24 @@ def real_dispatch(name: str, args: dict) -> dict:
         res = rb._call_plugin("create_point_based_element", {"data": [data]})
         eid = rb._extract_element_id(res) if isinstance(res, dict) else None
         if _ok(res) and eid:
-            return {"success": True, "message": "placed", "element_id": eid}
+            # VERIFY the element actually persisted: create_point_based_element can report success on a
+            # create that ROLLED BACK (a door/window with no valid host wall). That false "placed" is what
+            # sent the agent thrashing — read it back, and only THEN report success.
+            info = rb._call_plugin("get_element_info", {"elementId": int(eid)})
+            gone = isinstance(info, dict) and (info.get("Success") is False or "not found" in
+                   str(info.get("Message") or info.get("message") or info.get("error") or "").lower())
+            if gone:   # only a DEFINITIVE not-found blocks success; an empty/transient reply is trusted
+                return {"success": False, "message":
+                        "the placement did not persist (the element no longer exists). For a door/window "
+                        "this usually means there was no host wall — pass host_wall_id from a wall at this "
+                        "point (get_selected_elements, or pick_point on a wall)."}
+            msg = ("placed" if not substitute else
+                   f"placed using the closest loaded family '{substitute}' — the routine's "
+                   f"'{args.get('family_name')}' is not loaded in this model")
+            out = {"success": True, "message": msg, "element_id": eid}
+            if substitute:
+                out["substituted_family"] = substitute
+            return out
         return {"success": False,
                 "message": _msg(res) or "no element created (check the family is loaded and, for a "
                                         "door/window, that host_wall_id is a wall at this point)"}
