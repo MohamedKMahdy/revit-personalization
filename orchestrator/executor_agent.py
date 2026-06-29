@@ -238,13 +238,57 @@ GET_WARNINGS_TOOL: dict = {
     "input_schema": {"type": "object", "properties": {}},
 }
 
+
+def _bulk_params_code(category: str, param_names: list, in_view_only: bool) -> str:
+    """Build a FIXED, audited read snippet: read the given parameters for EVERY element of a category in
+    ONE call. The model only supplies a sanitized category + parameter names — it never authors code —
+    so this is a read-only, confirmation-exempt batch read (the cure for the 'audit 60 doors one-by-one'
+    cost blowup)."""
+    cat = re.sub(r"[^A-Za-z0-9_]", "", str(category or ""))                       # -> OST_* identifier
+    names = [re.sub(r'[^\w .\-/%()]', "", str(n))[:64] for n in (param_names or []) if str(n).strip()]
+    names_cs = ", ".join('"%s"' % n for n in names) or '"Mark"'
+    scope = "document, document.ActiveView.Id" if in_view_only else "document"
+    return (
+        f"var names = new string[] {{ {names_cs} }};\n"
+        f'var bic = (BuiltInCategory)System.Enum.Parse(typeof(BuiltInCategory), "{cat}");\n'
+        f"var col = new FilteredElementCollector({scope}).OfCategory(bic).WhereElementIsNotElementType();\n"
+        "return col.Select(e => new {\n"
+        "    id = e.Id.Value,\n"
+        "    name = e.Name,\n"
+        "    parameters = names.ToDictionary(n => n, n => {\n"
+        "        var p = e.LookupParameter(n);\n"
+        "        return p == null ? null : (p.StorageType == StorageType.String ? p.AsString() : p.AsValueString());\n"
+        "    })\n"
+        "}).ToList();"
+    )
+
+
+GET_PARAMS_BULK_TOOL: dict = {
+    "name": "get_parameters_bulk",
+    "description": (
+        "Read one or more parameter values for EVERY element of a category in ONE call. Returns a list of "
+        "{id, name, parameters}. ALWAYS use this to inspect/audit many elements (e.g. the Mark of all "
+        "doors) — never call get_element_parameters per element. Read-only."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string", "description": "Revit BuiltInCategory, e.g. 'OST_Doors', 'OST_Walls', 'OST_Windows'"},
+            "parameter_names": {"type": "array", "items": {"type": "string"},
+                                "description": "Instance parameter names to read, e.g. ['Mark']"},
+            "in_view_only": {"type": "boolean", "description": "Limit to the active view (default false = whole model)"},
+        },
+        "required": ["category", "parameter_names"],
+    },
+}
+
 # The full toolset the executor sees = curated ergonomic tools + the entire plugin surface
 # (+ the read-only warnings reader + the gated Revit API fallback). send_code_to_revit is never exposed
 # by name; both get_warnings and the fallback are the only sanctioned paths to it (get_warnings is a
 # fixed read), so they ride the same EXECUTOR_ALLOW_API_FALLBACK toggle.
 TOOL_SCHEMAS: list[dict] = (
     CURATED_SCHEMAS + revit_tools.TOOL_SCHEMAS
-    + ([GET_WARNINGS_TOOL, EXECUTE_API_TOOL] if API_FALLBACK_ENABLED else [])
+    + ([GET_WARNINGS_TOOL, GET_PARAMS_BULK_TOOL, EXECUTE_API_TOOL] if API_FALLBACK_ENABLED else [])
 )
 ALLOWED_TOOLS = {t["name"] for t in TOOL_SCHEMAS}
 
@@ -284,10 +328,11 @@ You are the execution layer of a BIM personalization assistant. You replay a LEA
 routine in the user's LIVE model using the tools. Work one step at a time.
 
 READ IN BULK, NEVER IN A LOOP — this is a hard cost rule:
-To inspect or audit MANY elements (e.g. "check the Mark of every door", "fix all the numbering"), make
-ONE execute_revit_api call with a FilteredElementCollector that returns ALL the values at once, then work
-from that single result. NEVER call get_element_parameters / get_element_info element-by-element in a loop
-— reading 60 doors one at a time costs ~100x more than one batched query and will be cut off.
+To inspect or audit MANY elements (e.g. "check the Mark of every door", "fix all the numbering"), call
+get_parameters_bulk ONCE with the category + parameter_names (e.g. category 'OST_Doors', ['Mark']). It
+returns the whole list of {id, name, parameters} in a single call. NEVER call get_element_parameters /
+get_element_info element-by-element in a loop — reading 60 doors one at a time costs ~100x more and will
+be cut off after a few calls.
 
 LEARN FROM THE MODEL — QUERY MISSING INFORMATION BEFORE YOU GUESS:
 The routine was learned offline and is blind to THIS model. When a fact you need is missing or
@@ -603,6 +648,24 @@ def real_dispatch(name: str, args: dict) -> dict:
                     "message": "could not read warnings (dedicated command not deployed; API path unavailable)"}
         return {"success": True, "warnings": parsed["warnings"], "dialogs": parsed["dialogs"],
                 "message": f"{len(parsed['warnings'])} warning(s), {len(parsed['dialogs'])} dialog(s)"}
+
+    # Batch read: every element of a category + the requested params in ONE call (fixed, audited snippet).
+    if name == "get_parameters_bulk":
+        code = _bulk_params_code(args.get("category", ""), args.get("parameter_names") or [],
+                                 bool(args.get("in_view_only")))
+        try:
+            res = rb._call_plugin("send_code_to_revit", {"code": code, "transactionMode": "none"}, timeout=60)
+        except Exception as exc:
+            return {"success": False, "message": f"bulk read failed: {exc}"}
+        if isinstance(res, dict) and res.get("error"):
+            return {"success": False, "message": str(res["error"])}
+        raw = res.get("result") if isinstance(res, dict) else res
+        try:
+            items = json.loads(raw) if isinstance(raw, str) else raw
+        except (ValueError, TypeError):
+            items = raw
+        n = len(items) if isinstance(items, list) else 0
+        return {"success": True, "message": f"read {n} element(s) in one call", "elements": items}
 
     # Gated Revit API fallback — compile + run a C# snippet against the live Document via the
     # plugin's send_code_to_revit. Transactional (auto) so a bad snippet rolls back + is undoable.
