@@ -189,31 +189,29 @@ def _category_from_routine(routine_id: str, motif: dict) -> str | None:
 
 
 def _existing_param_values(routine_id: str, motif: dict, param_names: list) -> dict:
-    """Best-effort: the values already present in the LIVE model for the given params, so the resolver
-    won't assign a duplicate. Bounded (<=50 elements, one category) + degrades to {} on any failure.
-    Runs sync (call it via asyncio.to_thread) — it makes several blocking plugin round-trips."""
+    """ALL values present in the LIVE model for the given params, so the resolver continues the real
+    sequence and never assigns a duplicate. Reads the WHOLE category in ONE batched call (the same fixed,
+    audited snippet behind get_parameters_bulk) — not a capped per-element loop, which previously sampled
+    only the first 50 elements and made the resolver pick a stale/duplicate mark. Sync (call via
+    asyncio.to_thread); degrades to {} on any failure."""
     names = [p for p in (param_names or []) if p]
     cat = _category_from_routine(routine_id, motif)
     if not names or not cat:
         return {}
     try:
         from mcp_server import revit_bridge as rb
-        r = rb._call_plugin("ai_element_filter", {"data": {"filterCategory": cat,
-            "includeInstances": True, "includeTypes": False, "maxElements": 50}})
-        resp = r.get("Response") if isinstance(r, dict) else None
-        ids = []
-        for e in (resp or []):
-            if isinstance(e, dict):
-                eid = e.get("Id") or e.get("ElementId") or (e.get("Properties") or {}).get("ElementId")
-                if eid is not None:
-                    ids.append(eid)
+        from orchestrator.executor_agent import _bulk_params_code
+        code = _bulk_params_code(cat, names, False)          # every element of the category, one call
+        res = rb._call_plugin("send_code_to_revit", {"code": code, "transactionMode": "none"}, timeout=60)
+        raw = res.get("result") if isinstance(res, dict) else res
+        items = json.loads(raw) if isinstance(raw, str) else raw
         out = {p: set() for p in names}
-        for eid in ids[:50]:
-            pr = rb._call_plugin("get_element_parameters", {"elementId": int(eid), "parameterNames": names})
-            rows = pr.get("Response") if isinstance(pr, dict) else (pr if isinstance(pr, list) else None)
-            for row in (rows or []):
-                if isinstance(row, dict) and row.get("name") in out and row.get("value") not in (None, ""):
-                    out[row["name"]].add(str(row["value"]))
+        for el in (items or []):
+            params = (el.get("parameters") or {}) if isinstance(el, dict) else {}
+            for p in names:
+                v = params.get(p)
+                if v not in (None, ""):
+                    out[p].add(str(v))
         return out
     except Exception:
         return {}
