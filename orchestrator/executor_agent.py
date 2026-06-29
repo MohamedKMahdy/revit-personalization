@@ -37,6 +37,12 @@ from shared import llm
 EXECUTOR_MODEL = llm.pick("EXECUTOR_MODEL", "claude-sonnet-4-6")
 MAX_ITERS = int(os.environ.get("EXECUTOR_MAX_ITERS", "14"))
 
+# Per-element reads that must NOT be looped (read them in one batched execute_revit_api instead). After
+# this many in a single run, the loop is short-circuited with a nudge — the hard cap on "audit 60 doors
+# one at a time" cost blowups (that pattern hit 605K input tokens / ~$2 for a single request).
+_READ_LOOP_TOOLS = {"get_element_parameters", "get_element_info", "get_parameter_definitions"}
+_READ_LOOP_CAP = int(os.environ.get("EXECUTOR_READ_LOOP_CAP", "8"))
+
 # ── The tools the executor may use (Anthropic schema). This list IS the allowlist. ──
 # CURATED_SCHEMAS are the ergonomic, hand-tuned tools for the common routine path
 # (place/set/tag + the model-grounding reads). The full plugin surface (create walls,
@@ -276,6 +282,12 @@ TOOL_SCHEMAS_PLAIN: list[dict] = [{k: v for k, v in t.items() if k != "cache_con
 EXECUTOR_SYSTEM = """\
 You are the execution layer of a BIM personalization assistant. You replay a LEARNED Revit
 routine in the user's LIVE model using the tools. Work one step at a time.
+
+READ IN BULK, NEVER IN A LOOP — this is a hard cost rule:
+To inspect or audit MANY elements (e.g. "check the Mark of every door", "fix all the numbering"), make
+ONE execute_revit_api call with a FilteredElementCollector that returns ALL the values at once, then work
+from that single result. NEVER call get_element_parameters / get_element_info element-by-element in a loop
+— reading 60 doors one at a time costs ~100x more than one batched query and will be cut off.
 
 LEARN FROM THE MODEL — QUERY MISSING INFORMATION BEFORE YOU GUESS:
 The routine was learned offline and is blind to THIS model. When a fact you need is missing or
@@ -1089,6 +1101,8 @@ def run_executor(
     messages: list[dict] = (list(prior_messages) + [_new_turn]) if prior_messages else [_new_turn]
     tool_calls: list[dict] = []
     attempts = 0
+    read_loop_count = 0        # per-element reads this run — capped so the model can't snowball cost by
+                               # querying elements one at a time (a single batched read costs ~nothing)
     api_reaffirmed = False     # has the agent reaffirmed an API-fallback escalation this turn?
     completion_nudges = 0      # times we've re-prompted the model to finish unfinished routine steps
     escalated = False          # have we stepped the cheap start model up to the ceiling this run?
@@ -1168,7 +1182,17 @@ def run_executor(
                 result = {"success": False, "message": f"tool '{name}' is not allowed"}
             else:
                 emit("tool", {"name": name, "args": args})
-                if (guard_api_fallback and name == "execute_revit_api" and not api_reaffirmed
+                if name in _READ_LOOP_TOOLS:
+                    read_loop_count += 1
+                if name in _READ_LOOP_TOOLS and read_loop_count > _READ_LOOP_CAP:
+                    # Hard cost guard: the model is reading elements ONE AT A TIME (the $2 "audit 60 doors"
+                    # failure mode — each call snowballs the conversation). Force a single batched read.
+                    result = {"success": False, "message":
+                              f"Stopped: you've read {read_loop_count} elements one-by-one. Do NOT loop "
+                              "get_element_parameters/get_element_info per element — it is very expensive. "
+                              "Use ONE execute_revit_api snippet with a FilteredElementCollector over the "
+                              "category to read them ALL at once, then work from that single result."}
+                elif (guard_api_fallback and name == "execute_revit_api" and not api_reaffirmed
                         and not _hit_hosted_placement_gap(tool_calls)):
                     # First escalation to raw API this turn — redirect to structured tools once.
                     # EXCEPTION: if a placement already returned "created 0" (the structured tool can't
