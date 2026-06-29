@@ -88,13 +88,18 @@ CURATED_SCHEMAS: list[dict] = [
         "name": "tag_element",
         "description": "Tag a placed element in the active view. The tag family is resolved "
                        "automatically from the element's category (e.g. a door → its door tag); pass "
-                       "tag_type_id only to force a specific tag type.",
+                       "tag_type_id only to force a specific tag type. Use offset_x/offset_y (mm) to "
+                       "place the tag away from the element for readability (e.g. when the user asks for "
+                       "the tag offset from the door/wall).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "element_id": {"type": "integer"},
                 "tag_type_id": {"type": "integer", "description": "Optional explicit tag FamilyTypeId "
                                 "(from get_available_family_types on the tag category, e.g. OST_DoorTags)"},
+                "offset_x": {"type": "number", "description": "Tag X offset from the element in mm (default 0)"},
+                "offset_y": {"type": "number", "description": "Tag Y offset from the element in mm (default 500, "
+                             "so the tag sits clear of the element for readability)"},
             },
             "required": ["element_id"],
         },
@@ -155,6 +160,22 @@ CURATED_SCHEMAS: list[dict] = [
 # transactional+undoable by default, and the generated code is streamed to the user for
 # oversight. It is a LAST RESORT, not the primary path.
 API_FALLBACK_ENABLED = os.environ.get("EXECUTOR_ALLOW_API_FALLBACK", "1").lower() not in ("0", "false", "no", "")
+
+# Every successful execute_revit_api use = a capability gap the agent had to fill with ad-hoc code.
+# We append it to a queue; tools/grow/promote_fallbacks.py later distills each into a clean, parameterized,
+# COMPILED bim-mcp command (broken into functions) + a tool schema, so next time there is a real tool.
+GROW_CANDIDATES_PATH = Path(__file__).with_name("grow_candidates.jsonl")
+
+
+def _record_capability_gap(code: str, args: dict) -> None:
+    try:
+        import time
+        rec = {"ts": int(time.time()), "code": code,
+               "args": {k: v for k, v in (args or {}).items() if k != "code"}}
+        with GROW_CANDIDATES_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 EXECUTE_API_TOOL: dict = {
     "name": "execute_revit_api",
@@ -492,7 +513,12 @@ def real_dispatch(name: str, args: dict) -> dict:
         # Resolve the tag type id (the plugin's auto-find by category is broken — see _resolve_tag_type_id)
         # and pass it as tagTypeId so the plugin uses it directly instead of failing "no tag family found".
         tag_type_id = args.get("tag_type_id") or _resolve_tag_type_id(eid)
-        params = {"elementId": eid, "useLeader": False, "offsetX": 0.0, "offsetY": 0.0}
+        # Honor a requested offset (mm) so "place the tag away from the door for readability" actually
+        # moves the tag. Default offsetY=500 (clear of the element), matching the plugin's own default —
+        # the old hardcoded 0,0 silently overrode it, making the preference inert.
+        params = {"elementId": eid, "useLeader": False,
+                  "offsetX": float(args.get("offset_x", 0.0)),
+                  "offsetY": float(args.get("offset_y", 500.0))}
         if tag_type_id:
             params["tagTypeId"] = str(int(tag_type_id))
         res = rb._call_plugin("tag_element", params)
@@ -581,6 +607,8 @@ def real_dispatch(name: str, args: dict) -> dict:
             if "error" in res:
                 return {"success": False, "message": str(res["error"])}
             ok = bool(res.get("success"))
+            if ok:
+                _record_capability_gap(code, args)   # raw material for a future compiled tool
             return {"success": ok,
                     "message": ("executed" if ok else (res.get("errorMessage") or "code failed")),
                     "result": res.get("result")}
@@ -806,11 +834,39 @@ def resolve_routine_values(motif: dict, examples: list | None = None,
             + [_clean(a.get("param_value_after") or a.get("param_value"))
                for e in examples for a in (e.get("actions") or []) if a.get("param_name") == pn])
             if v is not None]
+        # ANCHOR TO THE LIVE MODEL: the elements already in the project are far stronger evidence of the
+        # user's real naming CONVENTION than the routine's few recorded examples. If the model already
+        # uses a scheme (e.g. doors 'TU 29'…'TU 233'), continue IT ('TU 234') instead of replaying the
+        # routine's private counter ('106'). This also closes the correction loop for free: when the user
+        # corrects a Mark, that value becomes a real element, so the next resolve reads it and continues.
+        live = [v for v in (_clean(x) for x in (existing.get(pn) or ())) if v is not None]
+        if live:
+            # The model's own elements WIN over the routine's examples — even if the examples form a clean
+            # numeric rule. Use a rule induced from the live values if one exists (e.g. constant step);
+            # otherwise (real schemes have gaps, so induce returns None) continue from the highest mark in
+            # the live scheme ('TU 233' -> 'TU 234'). This is what stops a corrected/real convention from
+            # being clobbered by the routine's private counter ('106').
+            lr = induce_sequence_rule(live)
+            if lr:
+                out[pn] = next_from_rule(lr, existing.get(pn))
+                continue
+            nxt = next_in_sequence(_max_in_sequence(live))
+            if nxt is not None:
+                used = {str(v) for v in (existing.get(pn) or set())}
+                guard = 0
+                while str(nxt) in used and guard < 10000:
+                    adv = next_in_sequence(nxt)
+                    if adv is None or adv == nxt:
+                        break
+                    nxt, guard = adv, guard + 1
+                out[pn] = nxt
+                continue
+        # no usable live values: induce the scheme from the routine's own examples + last_values.
         rule = induce_sequence_rule(observed)
         if rule:
             out[pn] = next_from_rule(rule, existing.get(pn))
             continue
-        # fallback (single sample / irregular): the simple next-in-sequence.
+        # fallback (single sample / irregular, model empty): the simple next-in-sequence.
         nxt = next_in_sequence(_clean(last_values.get(pn)))
         if nxt is None:
             seen = [_clean(a.get("param_value_after") or a.get("param_value"))

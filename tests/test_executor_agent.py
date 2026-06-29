@@ -969,3 +969,24 @@ def test_events_streamed():
                     on_event=lambda k, p: events.append(k))
     kinds = set(events)
     assert {"reasoning", "tool", "result", "done"} <= kinds
+
+
+def test_mark_anchors_to_live_model_scheme():
+    """A correction must carry forward: when the live model already uses a naming convention
+    (e.g. doors 'TU 29'..'TU 233'), the next Mark continues IT ('TU 234'), not the routine's
+    private numeric counter — and the door after continues 'TU 235'. Regression for the
+    'corrected the Mark, next door repeated the mistake' bug."""
+    from orchestrator.executor_agent import resolve_routine_values
+    motif = {"steps": [{"param_name": "Mark", "param_value_type": "variable", "param_value": None}]}
+    examples = [{"actions": [{"param_name": "Mark", "param_value_after": v}]} for v in ("101", "102", "103")]
+    live = {"Mark": {f"TU {n}" for n in (29, 30, 100, 231, 232, 233)}}  # real, gappy scheme
+
+    r = resolve_routine_values(motif, examples, {"Mark": "105"}, existing_values=live)
+    assert r["Mark"] == "TU 234", r            # adopts the model's convention, not '106'
+
+    live2 = {"Mark": live["Mark"] | {"TU 234"}}
+    r2 = resolve_routine_values(motif, examples, {"Mark": "TU 234"}, existing_values=live2)
+    assert r2["Mark"] == "TU 235", r2          # and keeps going
+
+    # fresh project (no live values) still uses the routine's induced sequence
+    assert resolve_routine_values(motif, examples, {"Mark": "103"}, existing_values={})["Mark"] == "104"

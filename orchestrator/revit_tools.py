@@ -78,8 +78,47 @@ def tool_schemas() -> list[dict]:
     ]
 
 
-TOOL_SCHEMAS: list[dict] = tool_schemas()
-TOOL_NAMES: set[str] = set(_COMMAND_BY_TOOL)
+# ── Grown tools: capabilities the agent wrote as ad-hoc Revit API code and then PROMOTED into real,
+# compiled bim-mcp commands (see tools/grow/promote_fallbacks.py). They are advertised to the executor
+# exactly like built-in plugin tools, and dispatched by passing args straight to the plugin (the grown
+# command's params == the tool's schema). Over time the library converges on "all the tools we need". ──
+_GROWN_PATH = Path(__file__).with_name("grown_tools.json")
+_GROWN: dict[str, dict] = {}
+
+
+def _load_grown() -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    try:
+        if _GROWN_PATH.exists():
+            for e in json.loads(_GROWN_PATH.read_text(encoding="utf-8")):
+                name = e.get("name")
+                if name and name not in BLOCKED_COMMANDS and name not in _COMMAND_BY_TOOL:
+                    out[name] = {
+                        "description": e.get("description", ""),
+                        "input_schema": e.get("input_schema", {"type": "object", "properties": {}}),
+                    }
+    except Exception:
+        out = {}
+    return out
+
+
+def grown_schemas() -> list[dict]:
+    return [{"name": n, "description": v["description"], "input_schema": v["input_schema"]}
+            for n, v in _GROWN.items()]
+
+
+def reload_grown() -> list[str]:
+    """Re-read grown_tools.json and refresh the advertised toolset. Returns the grown tool names."""
+    global _GROWN, TOOL_SCHEMAS, TOOL_NAMES
+    _GROWN = _load_grown()
+    TOOL_SCHEMAS = tool_schemas() + grown_schemas()
+    TOOL_NAMES = set(_COMMAND_BY_TOOL) | set(_GROWN)
+    return list(_GROWN)
+
+
+_GROWN = _load_grown()
+TOOL_SCHEMAS: list[dict] = tool_schemas() + grown_schemas()
+TOOL_NAMES: set[str] = set(_COMMAND_BY_TOOL) | set(_GROWN)
 
 
 def normalize(res: Any) -> dict:
@@ -104,7 +143,8 @@ def dispatch(tool_name: str, args: dict) -> dict:
     """Execute one exposed plugin tool by passing its args straight through to the plugin."""
     from mcp_server import revit_bridge as rb
 
-    command = _COMMAND_BY_TOOL.get(tool_name)
+    # grown tools dispatch by their own command name (params pass straight through)
+    command = _COMMAND_BY_TOOL.get(tool_name) or (tool_name if tool_name in _GROWN else None)
     if command is None:
         return {"success": False, "message": f"unknown plugin tool '{tool_name}'"}
     timeout = _SLOW_TOOLS.get(tool_name, _DEFAULT_TIMEOUT)
