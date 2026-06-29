@@ -908,16 +908,19 @@ def test_choose_start_model_warm_simple_starts_cheap(monkeypatch):
     assert start == "claude-haiku-4-5" and esc == "claude-sonnet-4-6"
 
 
-def test_choose_start_model_cold_or_complex_starts_on_ceiling(monkeypatch):
+def test_choose_start_model_cheap_for_simple_or_warm(monkeypatch):
     monkeypatch.setattr(ex, "EXECUTOR_MODEL", "claude-sonnet-4-6")
     monkeypatch.setattr(ex, "ADAPTIVE_START", True)
     monkeypatch.setattr(ex, "CHEAP_MODEL", "claude-haiku-4-5")
     simple = {"steps": [{"action_type": "Place", "family_name": "M_Door"}]}
-    assert ex.choose_start_model(simple, {}) == ("claude-sonnet-4-6", None)              # cold (no executions)
-    assert ex.choose_start_model(simple, None) == ("claude-sonnet-4-6", None)
-    # a non-place/set/tag step makes it "not simple" → start on the ceiling even if warm
+    # SIMPLE routines start cheap (Haiku) + escalate, even cold — the common, cheap case
+    assert ex.choose_start_model(simple, {}) == ("claude-haiku-4-5", "claude-sonnet-4-6")
+    assert ex.choose_start_model(simple, None) == ("claude-haiku-4-5", "claude-sonnet-4-6")
+    # a non-place/set/tag step makes it "not simple", but a WARM routine still starts cheap
     complex_ = {"steps": [{"action_type": "DeleteElement"}]}
-    assert ex.choose_start_model(complex_, {"executions": 9}) == ("claude-sonnet-4-6", None)
+    assert ex.choose_start_model(complex_, {"executions": 9}) == ("claude-haiku-4-5", "claude-sonnet-4-6")
+    # cold AND complex -> start on the ceiling (no cheap evidence either way)
+    assert ex.choose_start_model(complex_, {}) == ("claude-sonnet-4-6", None)
 
 
 def test_choose_start_model_noop_on_gemini(monkeypatch):

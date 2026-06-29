@@ -1131,8 +1131,12 @@ def choose_start_model(motif: dict, routine_entry: dict | None) -> tuple[str, st
     if not ADAPTIVE_START or llm.is_gemini(ceiling) or llm.resolve(ceiling) == CHEAP_MODEL:
         return ceiling, None                              # free tier, disabled, or already cheapest
     r = routine_entry or {}
-    warm = bool(r.get("executions", 0) or r.get("last_host_wall_id") or r.get("family_substitutions"))
-    if warm and _is_simple_motif(motif):
+    warm = bool(r.get("executions", 0) or r.get("last_host_wall_id")
+                or r.get("family_substitutions") or r.get("compiled_skill"))
+    # Start CHEAP (Haiku) and escalate to the ceiling only on real difficulty for the common cheap case:
+    # a SIMPLE routine (place/set/tag/create) — even its first run — OR any warm routine. Only a COLD +
+    # COMPLEX routine starts on the ceiling. Escalation (after N failures) catches anything Haiku can't do.
+    if _is_simple_motif(motif) or warm:
         return CHEAP_MODEL, ceiling
     return ceiling, None
 
