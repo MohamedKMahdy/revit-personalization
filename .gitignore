@@ -53,3 +53,4 @@ BIMAssistant/bin/
 BIMAssistant/obj/
 orchestrator/grow_candidates.jsonl
 orchestrator/grown_tools.json
+.claude/
