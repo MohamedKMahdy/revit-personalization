@@ -60,7 +60,7 @@ DEFAULT_K_VALUES = [1, 3, 5, 10]
 
 CSV_FIELDS = [
     # Identity
-    "routine_id", "routine_label", "k", "rep",
+    "routine_id", "routine_label", "model", "k", "rep",
     # Sample Efficiency metrics
     "step_match_accuracy", "param_coverage", "spurious_steps",
     "quality_score",
@@ -256,6 +256,7 @@ def _run_one(routine, k: int, rep: int, gt_steps: list[dict]) -> dict:
     return {
         "routine_id":    routine.id,
         "routine_label": routine.label,
+        "model":         MODEL,          # which LLM extracted — enables model-comparison arms
         "k":             k,
         "rep":           rep,
         **scores,
