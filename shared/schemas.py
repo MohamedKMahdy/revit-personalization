@@ -13,7 +13,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ActionType = Literal["Place", "SetParam", "Tag", "Delete"]
+# Place = model-element instantiation; Create = non-model creation (views, sheets, viewports,
+# dimensions — discriminated by operation_class + element_category); Modify = geometry/relationship
+# edits (move / join / align). Create + Modify widen the pipeline BEYOND element instantiation
+# (Track D): documentation and modification routines become detectable and learnable, not just
+# place-set-tag. Additive — existing logs, motifs, and tests are untouched.
+ActionType = Literal["Place", "SetParam", "Tag", "Delete", "Create", "Modify"]
 OperationClass = Literal["Model", "Parameter", "Annotation", "View"]
 
 

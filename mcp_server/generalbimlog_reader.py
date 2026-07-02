@@ -130,6 +130,11 @@ def _strip_ost(category: str | None) -> str:
     return c[4:] if c.startswith("OST_") else c
 
 
+# Documentation / view-like categories (post-_strip_ost): a CREATED element in one of these is a
+# 'Create' action (operation_class View), not a model 'Place' — Track D (beyond instantiation).
+_VIEWLIKE_CATS = {"Views", "Sheets", "Viewports", "Schedules", "ScheduleGraphics", "Legends"}
+
+
 def _to_int_id(elementId) -> int:
     try:
         return int(elementId)
@@ -226,8 +231,15 @@ def project_to_action_records(project: dict) -> list[ActionRecord]:
                         **common,
                     ))
                 elif ann is not None:
-                    # Text / Dimension: no slot in the Place/SetParam/Tag model — skip.
-                    continue
+                    # Text / Dimension (non-tag annotation) → Create (Track D: beyond instantiation).
+                    records.append(ActionRecord(action_type="Create", operation_class="Annotation", **common))
+                    baseline[eid] = _flatten_instance(elem.get("parameters"))
+                elif cat in _VIEWLIKE_CATS:
+                    # Documentation elements (views/sheets/viewports/schedules) → Create with a param
+                    # baseline, so a rename / template assignment diffs into SetParams — this is what
+                    # makes 'duplicate view → rename → apply template → sheet it' a learnable routine.
+                    records.append(ActionRecord(action_type="Create", operation_class="View", **common))
+                    baseline[eid] = _flatten_instance(elem.get("parameters"))
                 else:
                     records.append(ActionRecord(action_type="Place", operation_class="Model", **common))
                     baseline[eid] = _flatten_instance(elem.get("parameters"))

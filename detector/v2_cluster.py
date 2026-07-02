@@ -44,7 +44,8 @@ from ._common import (
 
 @dataclass
 class Instance:
-    """One Place-rooted routine instance (the unit that gets clustered)."""
+    """One creation-rooted routine instance (the unit that gets clustered). Rooted at a Place
+    (model element) or a Create (view / sheet / viewport — Track D: beyond instantiation)."""
     element_id:    int
     actions:       list[ActionRecord]
     session_index: int = 0
@@ -60,10 +61,14 @@ class Instance:
             if a.action_type == "Place":
                 fam = a.family_name.split(":")[0].strip() or a.element_category
                 feats.add(f"fam:{fam}")
+            elif a.action_type == "Create":
+                feats.add(f"create:{(a.type_name or '').strip() or a.element_category}")
             elif a.action_type == "SetParam":
                 feats.add(f"param:{a.param_name or ''}")
             elif a.action_type == "Tag":
                 feats.add(f"tag:{a.tag_family_name or ''}")
+            elif a.action_type == "Modify":
+                feats.add(f"mod:{a.element_category}")
         return frozenset(feats)
 
     @property
@@ -107,11 +112,13 @@ class ClusterDetector:
             last_time = r.timestamp_unix
 
             at = r.action_type
-            if at == "Place":
+            if at in ("Place", "Create"):
+                # roots: Place (model element) or Create (view/sheet/viewport — Track D). A duplicated
+                # view + its renames/template SetParams is ONE instance keyed by the new view's id.
                 if r.element_id in open_instances:
                     closed.append(open_instances.pop(r.element_id))
                 open_instances[r.element_id] = Instance(r.element_id, [r], session_index)
-            elif at == "SetParam":
+            elif at in ("SetParam", "Modify"):
                 inst = open_instances.get(r.element_id)
                 if inst is not None:
                     inst.actions.append(r)
@@ -127,7 +134,7 @@ class ClusterDetector:
         instances = [
             i for i in closed
             if len(i.actions) >= self.config.min_instance_tokens
-            and i.actions[0].action_type == "Place"
+            and i.actions[0].action_type in ("Place", "Create")
         ]
         instances.sort(key=lambda i: (i.start_time, i.element_id))
         return instances

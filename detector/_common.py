@@ -20,6 +20,9 @@ def derive_key(rec: ActionRecord) -> str:
       Place    → family_name (family portion only, before any ':')
       SetParam → param_name
       Tag      → tag_family_name
+      Create   → type_name, else element_category (documentation elements: the view/sheet TYPE is the
+                 discriminator — 'Floor Plan' duplicates cluster together, apart from 'Sheets')
+      Modify   → element_category
     """
     at = rec.action_type
     if at == "Place":
@@ -28,6 +31,10 @@ def derive_key(rec: ActionRecord) -> str:
         return rec.param_name or ""
     if at == "Tag":
         return rec.tag_family_name or ""
+    if at == "Create":
+        return (rec.type_name or "").strip() or rec.element_category
+    if at == "Modify":
+        return rec.element_category
     return ""
 
 
@@ -36,7 +43,7 @@ def token(rec: ActionRecord) -> str:
     return f"{rec.action_type}:{derive_key(rec)}"
 
 
-_ACTION_CHAR = {"Place": "P", "SetParam": "S", "Tag": "T", "Delete": "D"}
+_ACTION_CHAR = {"Place": "P", "SetParam": "S", "Tag": "T", "Delete": "D", "Create": "C", "Modify": "M"}
 
 
 def action_char(rec: ActionRecord) -> str:
