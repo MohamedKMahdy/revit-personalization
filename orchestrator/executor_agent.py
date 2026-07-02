@@ -799,6 +799,14 @@ MAX_COMPLETION_NUDGES = 2
 # Any tool that PLACES an element / SETS a parameter / TAGS — the agent has several ways to do each
 # (e.g. place_and_configure both places AND sets parameters in one atomic call), so completion can't
 # key off place_element/set_parameter/tag_element alone.
+# Tools that satisfy a documentation/view 'create' step (Track D). Before the structured tools are
+# grown, execute_revit_api is the sanctioned route — and every use of it feeds the grow loop, which is
+# exactly how the library acquires create_sheet/duplicate_view/... as compiled commands.
+CREATE_TOOLS = {"duplicate_view", "create_sheet", "place_view_on_sheet", "apply_view_template",
+                "create_dimensions", "execute_revit_api"}
+# documentation categories whose 'Create' steps are view-work, not element placement (Track D)
+_DOC_CATS = {"Views", "Sheets", "Viewports", "Schedules", "ScheduleGraphics", "Legends",
+             "Dimensions", "TextNotes"}
 PLACE_TOOLS = {"place_element", "place_and_configure", "create_point_based_element",
                "create_line_based_element", "create_surface_based_element", "duplicate_element"}
 SETPARAM_TOOLS = {"set_parameter", "set_element_parameter"}
@@ -1016,7 +1024,13 @@ def required_steps_from_motif(motif: dict, param_values: dict | None = None) -> 
     out: list[dict] = []
     for s in steps:
         a = (s.get("action_type") or s.get("action") or "").lower()
-        if "place" in a or "create" in a:
+        cat = (s.get("element_category") or "").strip()
+        opc = (s.get("operation_class") or "").strip()
+        if a == "create" and (opc in ("View", "Annotation") or cat in _DOC_CATS):
+            # documentation create (Track D): duplicate view / create sheet / viewport / dimension —
+            # NOT an element placement; satisfied by CREATE_TOOLS (or the API fallback).
+            out.append({"type": "create", "what": (s.get("type_name") or cat or "view")})
+        elif "place" in a or "create" in a:
             out.append({"type": "place"})
         elif "tag" in a:
             out.append({"type": "tag"})
@@ -1074,11 +1088,17 @@ def _incomplete_steps(required: list[dict] | None, tool_calls: list[dict]) -> li
     configured = any(c["name"] == "place_and_configure" for c in ok)   # places AND sets params
     set_names = {(c["args"].get("name") or "").lower() for c in ok if c["name"] in SETPARAM_TOOLS}
     tagged = any(c["name"] in TAG_TOOLS for c in ok)
+    created = sum(1 for c in ok if c["name"] in CREATE_TOOLS)          # documentation creates (Track D)
     missing = []
     for step in required:
         t = step.get("type")
         if t == "place" and not placed:
             missing.append(step)
+        elif t == "create":
+            if created > 0:
+                created -= 1                     # one successful create satisfies one create step
+            else:
+                missing.append(step)
         elif t == "set_parameter" and not configured and (step.get("name") or "").lower() not in set_names:
             missing.append(step)
         elif t == "tag" and not tagged:
@@ -1095,6 +1115,9 @@ def _completion_nudge(missing: list[dict], placed_id) -> str:
             parts.append("tag the element")
         elif s["type"] == "place":
             parts.append("place the element")
+        elif s["type"] == "create":
+            parts.append(f"create the '{s.get('what', 'view')}' (view/sheet/viewport work — use the "
+                         "matching tool, or execute_revit_api if no structured tool exists)")
     el = f" (the placed element id is {placed_id})" if placed_id else ""
     return ("The routine is NOT finished yet" + el + ". You still need to: " + "; ".join(parts)
             + ". Do it now with the tools — a placement alone is never done; do not stop until every "
@@ -1403,7 +1426,23 @@ def build_goal(motif: dict, location: dict | None = None, param_values: dict | N
         repeat = s.get("repeat") or None
         target = f"the '{role}'" if role else "the placed element"
 
-        if ("place" in al or "create" in al) and fam:
+        cat = (s.get("element_category") or "").strip()
+        opc = (s.get("operation_class") or "").strip()
+        if al == "create" and (opc in ("View", "Annotation") or cat in _DOC_CATS):
+            # Documentation create (Track D): view/sheet/viewport work, phrased by category so the
+            # executor reaches for the right capability (or the API fallback, which feeds the grow loop).
+            what = (s.get("type_name") or "").strip() or cat or "view"
+            if cat == "Views":
+                base = (f"Create a new '{what}' view (duplicate an existing '{what}' view unless the "
+                        "routine implies otherwise); call it the "
+                        f"'{role or 'new view'}'.")
+            elif cat == "Sheets":
+                base = "Create a new sheet" + (f" (call it the '{role}')" if role else "") + "."
+            elif cat == "Viewports":
+                base = "Place the view created in this routine onto the sheet created in this routine (a viewport)."
+            else:
+                base = f"Create a '{what}' ({cat or opc})."
+        elif ("place" in al or "create" in al) and fam:
             base = f"Place the family '{fam}'"
             if role:
                 base += f" (call it the '{role}')"
@@ -1433,10 +1472,18 @@ def build_goal(motif: dict, location: dict | None = None, param_values: dict | N
             base = _render_repeat(repeat) + " " + base
         lines.append(f"  {i}. {base}")
 
-    if location:
+    # documentation-only routines (all creation steps are view/sheet work) need no model location
+    _needs_location = any(
+        ("place" in (s.get("action_type") or s.get("action") or "").lower()
+         or ((s.get("action_type") or s.get("action") or "").lower() == "create"
+             and (s.get("element_category") or "").strip() not in _DOC_CATS
+             and (s.get("operation_class") or "").strip() not in ("View", "Annotation")))
+        for s in steps
+    )
+    if location and _needs_location:
         lines.append(f"Place it at approximately x={location.get('x')}, y={location.get('y')} mm. "
                      "If it needs a host wall and none is there, ask the user to pick a point on a wall.")
-    else:
+    elif _needs_location:
         lines.append("No location given yet — if the user has a wall selected, host on it; otherwise use "
                      "pick_point to have the user click where to place it (on a wall for a door/window).")
     lines.append("Do EVERY step in order — place, set each parameter, and tag — self-correcting on any "
